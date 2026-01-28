@@ -40,6 +40,8 @@ For more information: https://rareskills.io/post/beacon-proxy
 
 ## Setup
 
+Requirements: Node and Foundry installed
+
 1. Clone the repository
 2. Install dependencies:
    ```bash
