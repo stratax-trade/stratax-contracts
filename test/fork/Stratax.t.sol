@@ -4,11 +4,13 @@ pragma solidity ^0.8.13;
 import {Test, console} from "forge-std/Test.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Stratax} from "../../src/Stratax.sol";
+import {StrataxPositionNft} from "../../src/StrataxPositionNft.sol";
 import {StrataxOracle} from "../../src/StrataxOracle.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
-import {ConstantsEtMainnet} from "../Constants.t.sol";
+import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
-import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {ProxyAdmin} from "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 /**
@@ -23,10 +25,14 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
 
     Stratax public stratax;
     Stratax public strataxImplementation;
-    UpgradeableBeacon public beacon;
-    BeaconProxy public proxy;
+    UpgradeableBeacon public strataxBeacon;
+    StrataxPositionNft public strataxPositionNft;
+    StrataxPositionNft public strataxPositionNftImplementation;
+    TransparentUpgradeableProxy public nftProxy;
+    ProxyAdmin public proxyAdmin;
     StrataxOracle public strataxOracle;
     address public ownerTrader;
+    uint256 public tokenId;
 
     uint256 public SAVED_DATA_BLOCK;
 
@@ -79,30 +85,38 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
         strataxOracle.setPriceFeed(USDC, USDC_PRICE_FEED);
         strataxOracle.setPriceFeed(WETH, WETH_PRICE_FEED);
 
-        // Deploy implementation
+        // Deploy Stratax implementation and beacon
         strataxImplementation = new Stratax();
+        strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), address(this));
 
-        // Deploy beacon
-        beacon = new UpgradeableBeacon(address(strataxImplementation), address(this));
+        // Deploy StrataxPositionNft implementation
+        strataxPositionNftImplementation = new StrataxPositionNft();
 
-        // Prepare initialization data
-        bytes memory initData = abi.encodeWithSelector(
-            Stratax.initialize.selector,
-            AAVE_POOL,
-            AAVE_PROTOCOL_DATA_PROVIDER,
-            INCH_ROUTER,
-            USDC,
-            address(strataxOracle)
-        );
+        // Deploy ProxyAdmin
+        proxyAdmin = new ProxyAdmin(address(this));
 
-        // Deploy proxy
-        proxy = new BeaconProxy(address(beacon), initData);
+        // Initialize StrataxPositionNft via TransparentUpgradeableProxy
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
+            .StrataxPositionNftInitParams({
+            strataxBeacon: address(strataxBeacon),
+            aavePool: AAVE_POOL,
+            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+            oneInchRouter: INCH_ROUTER,
+            strataxOracle: address(strataxOracle),
+            feeCollector: address(0),
+            owner: address(this),
+            uri: "https://stratax.io/nft/"
+        });
 
-        // Cast proxy to Stratax interface
-        stratax = Stratax(address(proxy));
+        bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
+        nftProxy =
+            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        strataxPositionNft = StrataxPositionNft(address(nftProxy));
 
-        // Transfer ownership to ownerTrader
-        stratax.transferOwnership(ownerTrader);
+        // Mint position NFT which deploys Stratax proxy
+        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH);
+        tokenId = _tokenId;
+        stratax = Stratax(strataxProxy);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -135,14 +149,10 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
         uint256 collateralAmount = 1000 * 10 ** 6;
         (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
             Stratax.TradeDetails({
-                collateralToken: address(USDC),
-                borrowToken: address(WETH),
                 desiredLeverage: 30_000,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: 0,
-                borrowTokenPrice: 0,
-                collateralTokenDec: 6,
-                borrowTokenDec: 18
+                borrowTokenPrice: 0
             })
         );
 
@@ -153,7 +163,7 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
         vm.startPrank(ownerTrader);
         IERC20(USDC).approve(address(stratax), collateralAmount);
         stratax.createLeveragedPosition(
-            USDC, flashLoanAmount, collateralAmount, WETH, borrowAmount, swapData, (flashLoanAmount * 950) / 1000
+            flashLoanAmount, collateralAmount, borrowAmount, swapData, (flashLoanAmount * 950) / 1000
         );
         vm.stopPrank();
 
@@ -169,14 +179,10 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
         uint256 collateralAmount = 1000 * 10 ** 6;
         (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
             Stratax.TradeDetails({
-                collateralToken: address(USDC),
-                borrowToken: address(WETH),
                 desiredLeverage: 30_000,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: 0,
-                borrowTokenPrice: 0,
-                collateralTokenDec: 6,
-                borrowTokenDec: 18
+                borrowTokenPrice: 0
             })
         );
 
@@ -187,7 +193,7 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
         vm.startPrank(ownerTrader);
         IERC20(USDC).approve(address(stratax), collateralAmount);
         stratax.createLeveragedPosition(
-            USDC, flashLoanAmount, collateralAmount, WETH, borrowAmount, openSwapData, (flashLoanAmount * 950) / 1000
+            flashLoanAmount, collateralAmount, borrowAmount, openSwapData, (flashLoanAmount * 950) / 1000
         );
 
         (uint256 totalCollateralAfterOpen, uint256 totalDebtAfterOpen,,,, uint256 healthFactorAfterOpen) =
@@ -199,11 +205,11 @@ contract StrataxForkTest is Test, ConstantsEtMainnet {
 
         // Unwind position
         console.log("Unwind: calculating params");
-        (uint256 collateralToWithdraw, uint256 debtAmount) = stratax.calculateUnwindParams(USDC, WETH);
+        (uint256 collateralToWithdraw, uint256 debtAmount) = stratax.calculateUnwindParams();
         console.log("Unwind: get 1inch data");
         (bytes memory unwindSwapData,) = get1inchSwapData(USDC, WETH, collateralToWithdraw, address(stratax));
         console.log("Unwind: calling stratax to unwind position");
-        stratax.unwindPosition(USDC, collateralToWithdraw, WETH, debtAmount, unwindSwapData, (debtAmount * 950) / 1000);
+        stratax.unwindPosition(collateralToWithdraw, debtAmount, unwindSwapData, (debtAmount * 950) / 1000);
 
         vm.stopPrank();
 

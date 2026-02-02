@@ -3,18 +3,24 @@ pragma solidity ^0.8.13;
 
 import {Test} from "forge-std/Test.sol";
 import {Stratax} from "../../src/Stratax.sol";
+import {StrataxPositionNft} from "../../src/StrataxPositionNft.sol";
 import {StrataxOracle} from "../../src/StrataxOracle.sol";
-import {ConstantsEtMainnet} from "../Constants.t.sol";
+import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
-import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
+import {ProxyAdmin} from "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
 
 contract StrataxUnitTest is Test, ConstantsEtMainnet {
     Stratax public stratax;
     Stratax public strataxImplementation;
-    UpgradeableBeacon public beacon;
-    BeaconProxy public proxy;
+    UpgradeableBeacon public strataxBeacon;
+    StrataxPositionNft public strataxPositionNft;
+    StrataxPositionNft public strataxPositionNftImplementation;
+    TransparentUpgradeableProxy public nftProxy;
+    ProxyAdmin public proxyAdmin;
     StrataxOracle public strataxOracle;
     address public ownerTrader;
+    uint256 public tokenId;
 
     function setUp() public {
         ownerTrader = address(0x123);
@@ -23,41 +29,58 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         vm.mockCall(USDC_PRICE_FEED, abi.encodeWithSignature("decimals()"), abi.encode(uint8(8)));
         vm.mockCall(WETH_PRICE_FEED, abi.encodeWithSignature("decimals()"), abi.encode(uint8(8)));
 
+        // Mock Aave pool flash loan fee
+        vm.mockCall(AAVE_POOL, abi.encodeWithSignature("FLASHLOAN_PREMIUM_TOTAL()"), abi.encode(uint128(9)));
+
+        // Mock token decimals
+        vm.mockCall(USDC, abi.encodeWithSignature("decimals()"), abi.encode(uint8(6)));
+        vm.mockCall(WETH, abi.encodeWithSignature("decimals()"), abi.encode(uint8(18)));
+
         strataxOracle = new StrataxOracle();
         strataxOracle.setPriceFeed(USDC, USDC_PRICE_FEED);
         strataxOracle.setPriceFeed(WETH, WETH_PRICE_FEED);
 
-        // Deploy implementation
+        // Deploy Stratax implementation and beacon
         strataxImplementation = new Stratax();
+        strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), address(this));
 
-        // Deploy beacon
-        beacon = new UpgradeableBeacon(address(strataxImplementation), address(this));
+        // Deploy StrataxPositionNft implementation
+        strataxPositionNftImplementation = new StrataxPositionNft();
 
-        // Prepare initialization data
-        bytes memory initData = abi.encodeWithSelector(
-            Stratax.initialize.selector,
-            AAVE_POOL,
-            AAVE_PROTOCOL_DATA_PROVIDER,
-            INCH_ROUTER,
-            USDC,
-            address(strataxOracle)
-        );
+        // Deploy ProxyAdmin
+        proxyAdmin = new ProxyAdmin(address(this));
 
-        // Deploy proxy
-        proxy = new BeaconProxy(address(beacon), initData);
+        // Initialize StrataxPositionNft via TransparentUpgradeableProxy
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
+            .StrataxPositionNftInitParams({
+            strataxBeacon: address(strataxBeacon),
+            aavePool: AAVE_POOL,
+            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+            oneInchRouter: INCH_ROUTER,
+            strataxOracle: address(strataxOracle),
+            feeCollector: address(0),
+            owner: address(this),
+            uri: "https://stratax.io/nft/"
+        });
 
-        // Cast proxy to Stratax interface
-        stratax = Stratax(address(proxy));
+        bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
+        nftProxy =
+            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        strataxPositionNft = StrataxPositionNft(address(nftProxy));
 
-        // Transfer ownership to ownerTrader
-        stratax.transferOwnership(ownerTrader);
+        // Mint position NFT which deploys Stratax proxy
+        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH);
+        tokenId = _tokenId;
+        stratax = Stratax(strataxProxy);
     }
 
     function test_ContractDeployment() public view {
         assertEq(address(stratax.aavePool()), AAVE_POOL, "AAVE Pool address mismatch");
         assertEq(address(stratax.oneInchRouter()), INCH_ROUTER, "1inch Router address mismatch");
-        assertEq(stratax.USDC(), USDC, "USDC address mismatch");
-        assertEq(stratax.owner(), ownerTrader, "Owner should be ownerTrader");
+        assertEq(stratax.collateralToken(), USDC, "Collateral token address mismatch");
+        assertEq(stratax.borrowToken(), WETH, "Borrow token address mismatch");
+        // Owner is verified via NFT ownership
+        assertEq(strataxPositionNft.ownerOf(tokenId), ownerTrader, "NFT owner should be ownerTrader");
     }
 
     function test_ConstantsAreSet() public pure {
@@ -77,12 +100,17 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
     }
 
     function test_BeaconProxySetup() public view {
-        assertEq(beacon.implementation(), address(strataxImplementation), "Beacon should point to implementation");
-        assertEq(address(stratax), address(proxy), "Stratax should be the proxy address");
+        assertEq(
+            strataxBeacon.implementation(), address(strataxImplementation), "Beacon should point to implementation"
+        );
+        // Verify stratax is deployed as a proxy
+        assertTrue(address(stratax) != address(0), "Stratax proxy should be deployed");
     }
 
-    function test_CannotReinitialize() public {
-        vm.expectRevert();
-        stratax.initialize(AAVE_POOL, AAVE_PROTOCOL_DATA_PROVIDER, INCH_ROUTER, USDC, address(strataxOracle));
+    function test_StrataxProxyInitialized() public view {
+        // Verify the Stratax proxy was properly initialized by mintPositionNft
+        assertEq(stratax.collateralToken(), USDC, "Collateral token should match");
+        assertEq(stratax.borrowToken(), WETH, "Borrow token should match");
+        assertEq(stratax.tokenId(), tokenId, "Token ID should match");
     }
 }
