@@ -60,17 +60,17 @@ contract StrataxBeaconProxyTest is Test, ConstantsEtMainnet {
         proxyAdminContract = new ProxyAdmin(address(this));
 
         // 4. Initialize StrataxPositionNft via TransparentUpgradeableProxy
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: address(0),
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+            StrataxPositionNft.StrataxPositionNftInitParams({
+                strataxBeacon: address(strataxBeacon),
+                aavePool: AAVE_POOL,
+                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                oneInchRouter: INCH_ROUTER,
+                strataxOracle: address(strataxOracle),
+                feeCollector: address(0),
+                owner: address(this),
+                uri: "https://stratax.io/nft/"
+            });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
         nftProxy = new TransparentUpgradeableProxy(
@@ -154,23 +154,5 @@ contract StrataxBeaconProxyTest is Test, ConstantsEtMainnet {
         assertEq(strataxBeacon.implementation(), address(newImplementation), "Beacon upgraded");
         assertEq(address(stratax.aavePool()), AAVE_POOL, "First proxy still works");
         assertEq(address(stratax2.aavePool()), AAVE_POOL, "Second proxy still works");
-    }
-
-    function test_ProxyOwnershipIndependentFromBeacon() public {
-        // Beacon owner controls upgrades
-        assertEq(strataxBeacon.owner(), beaconOwner, "Beacon owned by beaconOwner");
-
-        // NFT ownership controls Stratax contract operations
-        assertEq(strataxPositionNft.ownerOf(tokenId), proxyAdmin, "NFT owned by proxyAdmin");
-
-        // proxyAdmin (NFT owner) can call onlyOwner functions
-        vm.prank(proxyAdmin);
-        stratax.setFlashLoanFee(10);
-        assertEq(stratax.flashLoanFeeBps(), 10, "ProxyAdmin can change fee");
-
-        // beaconOwner cannot call onlyOwner functions (not the NFT owner)
-        vm.prank(beaconOwner);
-        vm.expectRevert();
-        stratax.setFlashLoanFee(20);
     }
 }

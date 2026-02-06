@@ -51,21 +51,22 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         proxyAdmin = new ProxyAdmin(address(this));
 
         // Initialize StrataxPositionNft via TransparentUpgradeableProxy
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: address(0),
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+            StrataxPositionNft.StrataxPositionNftInitParams({
+                strataxBeacon: address(strataxBeacon),
+                aavePool: AAVE_POOL,
+                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                oneInchRouter: INCH_ROUTER,
+                strataxOracle: address(strataxOracle),
+                feeCollector: address(0),
+                owner: address(this),
+                uri: "https://stratax.io/nft/"
+            });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        nftProxy =
-            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        nftProxy = new TransparentUpgradeableProxy(
+            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
+        );
         strataxPositionNft = StrataxPositionNft(address(nftProxy));
 
         // Mint position NFT which deploys Stratax proxy
@@ -91,12 +92,6 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
 
     function test_BasisPointsConstant() public view {
         assertEq(stratax.FLASHLOAN_FEE_PREC(), 10000, "FLASHLOAN_FEE_PREC should be 10000");
-    }
-
-    function test_OwnerCanSetFlashLoanFee() public {
-        vm.prank(ownerTrader);
-        stratax.setFlashLoanFee(9);
-        assertEq(stratax.flashLoanFeeBps(), 9, "Flash loan fee not set correctly");
     }
 
     function test_BeaconProxySetup() public view {
@@ -153,21 +148,22 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         vm.mockCall(feeCollectorMock, abi.encodeWithSignature("strataxFee()"), abi.encode(uint256(0)));
 
         // Deploy a new NFT with proper fee collector
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: feeCollectorMock,
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+            StrataxPositionNft.StrataxPositionNftInitParams({
+                strataxBeacon: address(strataxBeacon),
+                aavePool: AAVE_POOL,
+                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                oneInchRouter: INCH_ROUTER,
+                strataxOracle: address(strataxOracle),
+                feeCollector: feeCollectorMock,
+                owner: address(this),
+                uri: "https://stratax.io/nft/"
+            });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        TransparentUpgradeableProxy testProxy =
-            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        TransparentUpgradeableProxy testProxy = new TransparentUpgradeableProxy(
+            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
+        );
         StrataxPositionNft testNft = StrataxPositionNft(address(testProxy));
 
         // Mint position NFT
@@ -229,51 +225,55 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
          * The _calculateDesiredLeverage function uses a quadratic formula to solve for the original
          * desiredLeverage given flashLoanAmount and collateralAmount, accounting for the fee.
          */
-
-        // Mock Aave data provider to return LTV for USDC
-        uint256 ltv = 8000; // 80% LTV
-        vm.mockCall(
-            AAVE_PROTOCOL_DATA_PROVIDER,
-            abi.encodeWithSignature("getReserveConfigurationData(address)", USDC),
-            abi.encode(uint256(0), ltv, uint256(0), uint256(0), uint256(0), false, false, false, false, false)
-        );
-
         // Mock oracle prices (8 decimals)
         uint256 usdcPrice = 1e8; // $1.00
         uint256 wethPrice = 2000e8; // $2000.00
-        vm.mockCall(
-            USDC_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(usdcPrice), 0, 0, 0)
-        );
-        vm.mockCall(
-            WETH_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(wethPrice), 0, 0, 0)
-        );
+        // Mock Aave data provider to return LTV for USDC
+        Stratax testStratax;
+        {
 
-        // Setup fee collector with 1 basis point (0.01%) fee to avoid underflow bug
-        address feeCollectorMock = address(0x999);
-        uint256 strataxFeeRate = 1; // 1 basis point = 0.01%
-        vm.mockCall(feeCollectorMock, abi.encodeWithSignature("strataxFee()"), abi.encode(strataxFeeRate));
+            uint256 ltv = 8000; // 80% LTV
+            vm.mockCall(
+                AAVE_PROTOCOL_DATA_PROVIDER,
+                abi.encodeWithSignature("getReserveConfigurationData(address)", USDC),
+                abi.encode(uint256(0), ltv, uint256(0), uint256(0), uint256(0), false, false, false, false, false)
+            );
 
-        // Deploy a new NFT with fee collector
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: feeCollectorMock,
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+            vm.mockCall(
+                USDC_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(usdcPrice), 0, 0, 0)
+            );
+            vm.mockCall(
+                WETH_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(wethPrice), 0, 0, 0)
+            );
 
-        bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        TransparentUpgradeableProxy testProxy =
-            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
-        StrataxPositionNft testNft = StrataxPositionNft(address(testProxy));
+            // Setup fee collector with 1 basis point (0.01%) fee to avoid underflow bug
+            address feeCollectorMock = address(0x999);
+            uint256 strataxFeeRate = 1; // 1 basis point = 0.01%
+            vm.mockCall(feeCollectorMock, abi.encodeWithSignature("strataxFee()"), abi.encode(strataxFeeRate));
 
-        // Mint position NFT
-        (, address testStrataxProxy) = testNft.mintPositionNft(ownerTrader, USDC, WETH);
-        Stratax testStratax = Stratax(testStrataxProxy);
+            // Deploy a new NFT with fee collector
+            StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+                StrataxPositionNft.StrataxPositionNftInitParams({
+                    strataxBeacon: address(strataxBeacon),
+                    aavePool: AAVE_POOL,
+                    aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                    oneInchRouter: INCH_ROUTER,
+                    strataxOracle: address(strataxOracle),
+                    feeCollector: feeCollectorMock,
+                    owner: address(this),
+                    uri: "https://stratax.io/nft/"
+                });
+
+            bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
+            TransparentUpgradeableProxy testProxy = new TransparentUpgradeableProxy(
+                address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
+            );
+            StrataxPositionNft testNft = StrataxPositionNft(address(testProxy));
+
+            // Mint position NFT
+            (, address testStrataxProxy) = testNft.mintPositionNft(ownerTrader, USDC, WETH);
+            testStratax = Stratax(testStrataxProxy);
+        }
 
         vm.prank(ownerTrader);
         testStratax.setStrataxOracle(address(strataxOracle));
@@ -370,21 +370,22 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         vm.mockCall(feeCollectorMock, abi.encodeWithSignature("strataxFee()"), abi.encode(strataxFeeRate));
 
         // Deploy a new NFT with fee collector
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: feeCollectorMock,
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+            StrataxPositionNft.StrataxPositionNftInitParams({
+                strataxBeacon: address(strataxBeacon),
+                aavePool: AAVE_POOL,
+                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                oneInchRouter: INCH_ROUTER,
+                strataxOracle: address(strataxOracle),
+                feeCollector: feeCollectorMock,
+                owner: address(this),
+                uri: "https://stratax.io/nft/"
+            });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        TransparentUpgradeableProxy testProxy =
-            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        TransparentUpgradeableProxy testProxy = new TransparentUpgradeableProxy(
+            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
+        );
         StrataxPositionNft testNft = StrataxPositionNft(address(testProxy));
 
         // Mint position NFT

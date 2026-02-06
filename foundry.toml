@@ -10,7 +10,7 @@ remappings = [
     "@prb-math/=lib/prb-math/src/"
 ]
 no_match_path = "test/scripts/*"
-via_ir = true
+
 optimizer = true
 optimizer_runs = 200
 

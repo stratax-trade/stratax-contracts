@@ -11,6 +11,37 @@ import {IStrataxPositionNft} from "./interfaces/internal/IStrataxPositionNft.sol
 import {IFeeCollector} from "./interfaces/internal/IFeeCollector.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 
+/*
+  _________ __                 __
+ /   _____//  |_____________ _/  |______  ___  ___
+ \_____  \\   __\_  __ \__  \\   __\__  \ \  \/  /
+ /        \|  |  |  | \// __ \|  |  / __ \_>    <
+/_______  /|__|  |__|  (____  /__| (____  /__/\_ \
+        \/                  \/          \/      \/
+Author: Marquis Harris
+*/
+
+/**
+ * @title Stratax
+ * @author Marquis Harris
+ * @notice Represents a leveraged position powered by Aave and 1inch
+ * @dev This contract is minted by the StrataxPositionNft contract as a beacon proxy
+ * which will set the collateral token and borrow token. Each contract is only meant
+ * to hold one type of position i.e. long ETH if you want to short ETH you need to mint
+ * another NFT with the collateral as USDC and the borrow token as ETH.
+ *
+ * Leveraged positions are opened in the following steps:
+ * 1. Supplying collateral from the user to Aave
+ * 2. Taking Aave flash loan and supplying additional collateral
+ * 3. Borrowing against toal supplied collateral
+ * 4. Swapping the received borrowed token through 1inch back to collateral token
+ * 5. Repay the flashloan with the amount recieved from swapping
+ * Result is a short or long position.
+ *
+ * @dev In addition to the functions opening or closing leveraged positions
+ * there are functions to manage the position's health with repay, borrow
+ *
+ */
 contract Stratax is Initializable {
     /*//////////////////////////////////////////////////////////////
                             TYPE DECLARATIONS
@@ -157,14 +188,12 @@ contract Stratax is Initializable {
     /// @param borrowedToken Address of the borrowed token
     /// @param totalCollateralSupplied Total amount of collateral supplied to Aave
     /// @param borrowedAmount Amount borrowed from Aave
-    /// @param healthFactor Final health factor of the position
     event LeveragePositionCreated(
         address indexed user,
         address collateralToken,
         address borrowedToken,
         uint256 totalCollateralSupplied,
-        uint256 borrowedAmount,
-        uint256 healthFactor
+        uint256 borrowedAmount
     );
 
     /// @notice Emitted when a leveraged position is unwound
@@ -304,11 +333,12 @@ contract Stratax is Initializable {
 
     /**
      * @notice Sets the flash loan fee in basis points
-     * @param _flashLoanFeeBps The flash loan fee in basis points (e.g., 9 = 0.09%)
+     * @dev updates the flash loan fee from Aave
      */
-    function setFlashLoanFee(uint256 _flashLoanFeeBps) external onlyOwner {
-        require(_flashLoanFeeBps < FLASHLOAN_FEE_PREC, "Fee must be < 100%");
-        flashLoanFeeBps = _flashLoanFeeBps;
+    function updateFlashLoanFee() external {
+        flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL();
+        //
+        require(flashLoanFeeBps < FLASHLOAN_FEE_PREC, "Fee must be < 100%");
     }
 
     /**
@@ -662,7 +692,6 @@ contract Stratax is Initializable {
         aavePool.supply(_asset, totalCollateral, address(this), 0);
 
         // Step 2: Borrow, swap, and repay
-        uint256 healthFactor;
         {
             uint256 prevBal = IERC20(flashParams.borrowToken).balanceOf(address(this));
             aavePool.borrow(flashParams.borrowToken, flashParams.borrowAmount, 2, 0, address(this));
@@ -685,14 +714,9 @@ contract Stratax is Initializable {
             }
 
             IERC20(_asset).approve(address(aavePool), totalDebt);
-            (,,,,, healthFactor) = aavePool.getUserAccountData(address(this));
         }
 
-        require(healthFactor > 1e18, "Position health factor too low");
-
-        emit LeveragePositionCreated(
-            user, _asset, flashParams.borrowToken, totalCollateral, flashParams.borrowAmount, healthFactor
-        );
+        emit LeveragePositionCreated(user, _asset, flashParams.borrowToken, totalCollateral, flashParams.borrowAmount);
 
         return true;
     }
