@@ -2,8 +2,9 @@
 pragma solidity ^0.8.13;
 
 import {ERC721Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC721/ERC721Upgradeable.sol";
-import {ERC721EnumerableUpgradeable} from
-    "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
+import {
+    ERC721EnumerableUpgradeable
+} from "@openzeppelin/contracts-upgradeable/token/ERC721/extensions/ERC721EnumerableUpgradeable.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
@@ -53,6 +54,9 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
 
+    /// @notice precision for the defaultBorrowSafetyMargin
+    uint256 public constant BORROW_SAFETY_PRECISION = 1e4;
+
     /// @notice Address of the Stratax Beacon for deploying proxy contracts
     address public strataxBeacon;
 
@@ -68,7 +72,11 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     /// @notice Address of the Stratax oracle for initializing Stratax proxies
     address public strataxOracle;
 
+    /// @notice Address of the fee collector for opening and closing positions
     address public feeCollector;
+
+    /// @notice the default value which can be changed by the NFT owner
+    uint256 public defaultBorrowSafetyMargin;
 
     /// @notice Counter for token IDs (position types)
     uint256 private _nextTokenId;
@@ -147,6 +155,7 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
         oneInchRouter = params.oneInchRouter;
         strataxOracle = params.strataxOracle;
         feeCollector = params.feeCollector;
+        defaultBorrowSafetyMargin = 9900; // Default to 99% of max LTV
         _nextTokenId = 1; // Start token IDs at 1
     }
 
@@ -181,12 +190,13 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
             collateralToken: collateralToken,
             borrowToken: borrowToken,
             strataxOracle: strataxOracle,
-            feeCollector: feeCollector
+            feeCollector: feeCollector,
+            borrowSafetyMargin: defaultBorrowSafetyMargin
         });
 
         // Deploy a new Stratax proxy contract for this position
         bytes memory initData = abi.encodeWithSignature(
-            "initialize((address,address,address,address,uint256,address,address,address,address))", initParams
+            "initialize((address,address,address,address,uint256,address,address,address,address,uint256))", initParams
         );
 
         strataxProxy = address(new BeaconProxy(strataxBeacon, initData));
@@ -233,6 +243,11 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
      */
     function setBaseURI(string memory baseUri) external onlyOwner {
         _baseTokenUri = baseUri;
+    }
+
+    function setDefaultBorrowSafetyMargin(uint256 _borrowSafetyMargin) public onlyOwner {
+        require(_borrowSafetyMargin < BORROW_SAFETY_PRECISION, "Invlaid borrowSafetMargin");
+        defaultBorrowSafetyMargin = _borrowSafetyMargin;
     }
 
     /*//////////////////////////////////////////////////////////////

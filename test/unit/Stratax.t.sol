@@ -78,8 +78,8 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
     function test_ContractDeployment() public view {
         assertEq(address(stratax.aavePool()), AAVE_POOL, "AAVE Pool address mismatch");
         assertEq(address(stratax.oneInchRouter()), INCH_ROUTER, "1inch Router address mismatch");
-        assertEq(stratax.collateralToken(), USDC, "Collateral token address mismatch");
-        assertEq(stratax.borrowToken(), WETH, "Borrow token address mismatch");
+        assertEq(stratax.getCollateralTokenAddress(), USDC, "Collateral token address mismatch");
+        assertEq(stratax.getBorrowTokenAddress(), WETH, "Borrow token address mismatch");
         // Owner is verified via NFT ownership
         assertEq(strataxPositionNft.ownerOf(tokenId), ownerTrader, "NFT owner should be ownerTrader");
     }
