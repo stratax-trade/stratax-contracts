@@ -45,6 +45,11 @@ contract StrataxOracle {
         }
     }
 
+    /**
+     * @notice internal function for setting the price feed address
+     * @param _token token address
+     * @param _priceFeed chainlink price feed address
+     */
     function _setPriceFeed(address _token, address _priceFeed) internal {
         require(_token != address(0), "Invalid token address");
         require(_priceFeed != address(0), "Invalid price feed address");

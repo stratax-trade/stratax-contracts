@@ -40,21 +40,22 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         ProxyAdmin proxyAdmin = new ProxyAdmin(address(this));
 
         // Initialize StrataxPositionNft via TransparentUpgradeableProxy
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: address(0),
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+            StrataxPositionNft.StrataxPositionNftInitParams({
+                strataxBeacon: address(strataxBeacon),
+                aavePool: AAVE_POOL,
+                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                oneInchRouter: INCH_ROUTER,
+                strataxOracle: address(strataxOracle),
+                feeCollector: address(0),
+                owner: address(this),
+                uri: "https://stratax.io/nft/"
+            });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        TransparentUpgradeableProxy nftProxy =
-            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        TransparentUpgradeableProxy nftProxy = new TransparentUpgradeableProxy(
+            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
+        );
         strataxPositionNft = StrataxPositionNft(address(nftProxy));
 
         // Mint position NFT which deploys Stratax proxy
@@ -126,7 +127,10 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         );
 
         // Calculate unwind params
-        (uint256 collateralToWithdraw, uint256 debtAmount) = stratax.calculateUnwindParams();
+        (
+            uint256 collateralToWithdraw,
+            /* uint256 debtAmount */, /*  uint256 strataxFee */
+        ) = stratax.calculateUnwindParams(type(uint256).max);
 
         // Get swap data for unwinding position (USDC -> WETH)
         (bytes memory unwindSwapData, string memory unwindKey) = get1inchSwapData(USDC, WETH, collateralToWithdraw);

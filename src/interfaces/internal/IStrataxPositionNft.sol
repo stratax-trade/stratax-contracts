@@ -100,9 +100,9 @@ interface IStrataxPositionNft is IERC721 {
     /**
      * @notice Sets the base URI for token metadata
      * @dev Can only be called by the contract owner
-     * @param baseURI The new base URI
+     * @param baseUri The new base URI
      */
-    function setBaseURI(string memory baseURI) external;
+    function setBaseURI(string memory baseUri) external;
 
     /*//////////////////////////////////////////////////////////////
                         VIEW FUNCTIONS

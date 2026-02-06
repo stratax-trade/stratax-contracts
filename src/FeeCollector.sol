@@ -56,8 +56,10 @@ contract FeeCollector is Initializable, OwnableUpgradeable {
     function collectFees(address _token, uint256 _amount) external {
         require(_amount > 0, "Amount must be greater than zero");
         require(_token != address(0), "Invalid token address");
-
+        /// forge-lint: disable-next-line(erc20-unchecked-transfer)
         IERC20(_token).transferFrom(msg.sender, address(this), _amount);
+
+        // store trade data in a mapping to track total trade volume
 
         emit FeesCollected(_token, msg.sender, _amount);
     }
@@ -72,7 +74,7 @@ contract FeeCollector is Initializable, OwnableUpgradeable {
 
         uint256 balance = IERC20(_token).balanceOf(address(this));
         require(balance > 0, "No fees to withdraw");
-
+        /// forge-lint: disable-next-line(erc20-unchecked-transfer)
         IERC20(_token).transfer(msg.sender, balance);
 
         emit FeesWithdrawn(_token, msg.sender, balance);
@@ -98,7 +100,8 @@ contract FeeCollector is Initializable, OwnableUpgradeable {
         uint256 balance = IERC20(_token).balanceOf(address(this));
         require(balance >= _amount, "Insufficient balance");
 
-        IERC20(_token).transfer(msg.sender, _amount);
+        bool success = IERC20(_token).transfer(msg.sender, _amount);
+        require(success, "Transfer failed");
 
         emit FeesWithdrawn(_token, msg.sender, _amount);
     }

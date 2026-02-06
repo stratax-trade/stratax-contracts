@@ -7,7 +7,6 @@ import {ERC721EnumerableUpgradeable} from
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
-import {IBeacon} from "@openzeppelin/contracts/proxy/beacon/IBeacon.sol";
 import {Stratax} from "./Stratax.sol";
 
 contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721EnumerableUpgradeable, OwnableUpgradeable {
@@ -78,7 +77,7 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     mapping(uint256 => Position) public positions;
 
     /// @notice Base URI for token metadata
-    string private _baseTokenURI;
+    string private _baseTokenUri;
 
     /// @notice Storage gap for future upgrades
     uint256[50] private __gap;
@@ -140,7 +139,7 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
         __ERC721Enumerable_init();
         __Ownable_init(params.owner);
 
-        _baseTokenURI = params.uri;
+        _baseTokenUri = params.uri;
 
         strataxBeacon = params.strataxBeacon;
         aavePool = params.aavePool;
@@ -230,10 +229,10 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     /**
      * @notice Sets the base URI for token metadata
      * n     * @dev Can only be called by the contract owner
-     * @param baseURI The new base URI
+     * @param baseUri The new base URI
      */
-    function setBaseURI(string memory baseURI) external onlyOwner {
-        _baseTokenURI = baseURI;
+    function setBaseURI(string memory baseUri) external onlyOwner {
+        _baseTokenUri = baseUri;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -310,7 +309,7 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
      * @return The base URI string
      */
     function _baseURI() internal view override returns (string memory) {
-        return _baseTokenURI;
+        return _baseTokenUri;
     }
 
     /**

@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: UNLICENSED
-pragma solidity ^0.8.13; // /Users/marquisharris/work/banken/stratax/frontend/
+pragma solidity ^0.8.13;
 
+import {sqrt} from "@prb-math/Common.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {IPool} from "./interfaces/external/IPool.sol";
 import {IAggregationRouter} from "./interfaces/external/IAggregationRouter.sol";
@@ -85,7 +86,7 @@ contract Stratax is Initializable {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Constant for basis points calculations (100% = 10000)
-    uint256 public constant FLASHLOAN_FEE_PREC = 10_000;
+    uint256 public constant FLASHLOAN_FEE_PREC = 1e4;
 
     /// @notice Precision used for price feeds (8 decimals)
     uint256 public constant PRICE_FEED_PREC = 1e8;
@@ -96,12 +97,15 @@ contract Stratax is Initializable {
     /// @notice Precision for leverage calculations (4 decimals, e.g., 30000 = 3x)
     uint256 public constant LEVERAGE_PRECISION = 1e4;
 
-    /// @notice Safety margin for borrow calculations (9800 = 98% of max LTV)
-    /// @dev This ensures positions have a healthy buffer and don't immediately risk liquidation
-    uint256 public constant BORROW_SAFETY_MARGIN = 9800; // 98% of max
-
-    IStrataxPositionNft public strataxPositionNft;
+    /// @notice tokenId which represents this contract in the StrataxPositionNft
     uint256 public tokenId;
+
+    /// @notice Safety margin for borrow calculations (9900 = 99% of max LTV)
+    /// @dev This ensures positions have a healthy buffer and don't immediately risk liquidation
+    uint256 public borrowSafetyMargin; // 99% of max LTV for Aave collateral
+
+    /// @notice StrataxPositionNft contract for tracking ownership
+    IStrataxPositionNft public strataxPositionNft;
 
     /// @notice Aave lending pool interface for flash loans and lending operations
     IPool public aavePool;
@@ -121,6 +125,7 @@ contract Stratax is Initializable {
     /// @notice Decimals of the collateral token
     uint256 public collateralTokenDecimals;
 
+    /// @notice Precision of the collateral token in storage for gas savings
     uint256 public collateralTokenPrecision;
 
     /// @notice Decimals of the borrow token
@@ -129,6 +134,7 @@ contract Stratax is Initializable {
     /// @notice Address of the Stratax price oracle contract
     address public strataxOracle;
 
+    /// @notice Address for the fee collector which takes a opening and closing fee
     address public feeCollector;
 
     /// @notice Contract owner address
@@ -184,7 +190,6 @@ contract Stratax is Initializable {
 
     /// @notice Restricts function access to contract owner only
     modifier onlyOwner() {
-        //require(msg.sender == owner, "Not owner");
         require(msg.sender == strataxPositionNft.ownerOf(tokenId), "Not Owner");
         _;
     }
@@ -206,13 +211,15 @@ contract Stratax is Initializable {
         borrowToken = params.borrowToken;
         strataxOracle = params.strataxOracle;
         flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL(); // Default 0.05% Aave flash loan fee
-
         feeCollector = params.feeCollector;
 
         // Fetch and store token decimals
         collateralTokenDecimals = IERC20(params.collateralToken).decimals();
         collateralTokenPrecision = 10 ** collateralTokenDecimals;
         borrowTokenDecimals = IERC20(params.borrowToken).decimals();
+
+        //@TODO add this to the iniParams
+        borrowSafetyMargin = 9900;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -220,13 +227,15 @@ contract Stratax is Initializable {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Callback function called by Aave after receiving flash loan
+     * @notice Callback function called by Aave Pool after receiving flash loan
+     * @dev This function must be implemented to handle flash loans from Aave V3
+     *      It routes to either _executeOpenOperation or _executeUnwindOperation based on OperationType
      * @param _asset The flash loaned asset address
-     * @param _amount The flash loan amount
-     * @param _premium The flash loan fee
-     * @param _initiator The initiator of the flash loan
-     * @param _params Encoded parameters for the operation
-     * @return bool Returns true if operation succeeds
+     * @param _amount The flash loan amount received
+     * @param _premium The Aave flash loan fee (typically 0.05%)
+     * @param _initiator The address that initiated the flash loan (must be this contract)
+     * @param _params Encoded parameters containing OperationType and operation-specific params
+     * @return bool Returns true if operation succeeds, reverts otherwise
      */
     function executeOperation(
         address _asset,
@@ -249,16 +258,19 @@ contract Stratax is Initializable {
     }
 
     /**
-     * @notice Unwinds a leveraged position by:
-     * 1. Taking a flash loan of the debt token
-     * 2. Repaying the Aave debt
-     * 3. Withdrawing all collateral from Aave
-     * 4. Swapping collateral back to debt token
-     * 5. Repaying the flash loan
-     * @param _collateralToWithdraw The amount of collateral to withdraw from Aave
-     * @param _debtAmount The amount of debt to repay
-     * @param _oneInchSwapData The calldata from 1inch API to swap collateral back to debt token
-     * @param _minReturnAmount Minimum amount of debt token expected from swap (slippage protection)
+     * @notice Unwinds a leveraged position by closing the Aave debt and recovering collateral
+     * @dev Process:
+     *      1. Flash loan the debt token amount
+     *      2. Repay all Aave debt
+     *      3. Withdraw collateral from Aave
+     *      4. Swap collateral back to debt token via 1inch
+     *      5. Pay Stratax fee
+     *      6. Repay flash loan + premium
+     *      7. Any leftover is supplied back to Aave or sent to user
+     * @param _collateralToWithdraw Amount of collateral to withdraw from Aave (should include buffer for fees/slippage)
+     * @param _debtAmount Total amount of debt to repay (from calculateUnwindParams)
+     * @param _oneInchSwapData Encoded calldata from 1inch API for collateral → debt token swap
+     * @param _minReturnAmount Minimum debt tokens expected from swap for slippage protection
      */
     function unwindPosition(
         uint256 _collateralToWithdraw,
@@ -371,6 +383,7 @@ contract Stratax is Initializable {
         aavePool.borrow(borrowToken, _amount, 2, 0, address(this)); // Variable interest rate mode
 
         // Transfer borrowed tokens to owner
+
         IERC20(borrowToken).transfer(msg.sender, _amount);
 
         // Get health factor after borrowing
@@ -388,6 +401,7 @@ contract Stratax is Initializable {
         require(_amount > 0, "Amount must be greater than zero");
 
         // Transfer debt token from user to contract
+
         IERC20(borrowToken).transferFrom(msg.sender, address(this), _amount);
 
         // Approve Aave pool to spend the debt token
@@ -398,22 +412,27 @@ contract Stratax is Initializable {
 
         return amountRepaid;
     }
+
     /*//////////////////////////////////////////////////////////////
                         PUBLIC FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Creates a leveraged position by:
-     * 1. Taking a flash loan
-     * 2. Supplying flash loan + user's extra amount as collateral
-     * 3. Borrowing against the collateral
-     * 4. Swapping borrowed tokens via 1inch
-     * 5. Repaying flash loan with swap proceeds
-     * @param _flashLoanAmount The amount to flash loan
-     * @param _collateralAmount Additional amount from user to supply as collateral
-     * @param _borrowAmount The amount to borrow from Aave
-     * @param _oneInchSwapData The calldata from 1inch API to swap borrowed token back to flash loan token
-     * @param _minReturnAmount Minimum amount expected from swap (slippage protection)
+     * @notice Creates a leveraged position using flash loans and Aave V3
+     * @dev Process:
+     *      1. User transfers collateral to contract
+     *      2. Flash loan additional collateral
+     *      3. Pay Stratax fee
+     *      4. Supply total collateral (user + flash loan) to Aave
+     *      5. Borrow debt tokens from Aave
+     *      6. Swap debt tokens to collateral via 1inch
+     *      7. Repay flash loan with swap proceeds
+     *      8. Supply any leftover collateral to Aave
+     * @param _flashLoanAmount Amount to flash loan (from calculateOpenParams)
+     * @param _collateralAmount Amount of collateral user provides
+     * @param _borrowAmount Amount to borrow from Aave (from calculateOpenParams)
+     * @param _oneInchSwapData Encoded calldata from 1inch API for debt → collateral swap
+     * @param _minReturnAmount Minimum collateral expected from swap for slippage protection
      */
     function createLeveragedPosition(
         uint256 _flashLoanAmount,
@@ -424,7 +443,13 @@ contract Stratax is Initializable {
     ) public onlyOwner {
         require(_collateralAmount > 0, "Collateral Cannot be Zero");
         // Transfer the user's collateral to the contract
-        IERC20(collateralToken).transferFrom(msg.sender, address(this), _collateralAmount);
+        {
+            uint256 prevBalance = IERC20(collateralToken).balanceOf(address(this));
+            /// forge-lint: disable-next-line(all)
+            IERC20(collateralToken).transferFrom(msg.sender, address(this), _collateralAmount);
+            uint256 currBalance = IERC20(collateralToken).balanceOf(address(this));
+            require(currBalance - prevBalance == _collateralAmount, "Unexpected collateral transfer amount");
+        }
 
         FlashLoanParams memory params = FlashLoanParams({
             collateralToken: collateralToken,
@@ -442,7 +467,7 @@ contract Stratax is Initializable {
     }
 
     /**
-     * @notice Calculates the maximum theoretical leverage for a given LTV
+     * @notice Calculates the maximum theoretical leverage for a given LTV (without fees/margins)
      * @param _ltv The loan-to-value ratio with 4 decimals (e.g., 8000 = 80%)
      * @return maxLeverage The maximum leverage with 4 decimals (e.g., 50000 = 5x)
      */
@@ -455,7 +480,7 @@ contract Stratax is Initializable {
     }
 
     /**
-     * @notice Calculates the maximum theoretical leverage for a specific asset on Aave
+     * @notice Calculates the maximum theoretical leverage for a specific asset on Aave (without fees/margins)
      * @param _asset The address of the collateral asset
      * @return maxLeverage The maximum leverage with 4 decimals (e.g., 50000 = 5x)
      */
@@ -475,6 +500,7 @@ contract Stratax is Initializable {
      *        - borrowTokenPrice: Price of borrow token in USD with 8 decimals
      * @return flashLoanAmount The amount to flash loan (in collateral token units)
      * @return borrowAmount The amount to borrow from Aave (in borrow token units)
+     * @dev for off-chain use
      */
     function calculateOpenParams(TradeDetails memory details)
         public
@@ -487,12 +513,22 @@ contract Stratax is Initializable {
         require(details.desiredLeverage >= LEVERAGE_PRECISION, "Leverage must be >= 1x");
         require(details.collateralAmount > 0, "Collateral must be > 0");
 
+        // Calculate maximum theoretical leverage and validate desired leverage
+        uint256 maxLeverage = getMaxLeverage(ltv);
+        require(details.desiredLeverage <= maxLeverage, "Desired leverage exceeds maximum");
+
+        //calculate the max leverage considering the flash loan fee, stratax fee, and safety margin (combination of nearing max Aave LTV and swap slippage)
+        uint256 actualMaxLeverage = getMaxAchievableLeverageBinary();
+        if (details.desiredLeverage > actualMaxLeverage) {
+            details.desiredLeverage = actualMaxLeverage;
+        }
+
         //stratax fee logic
         {
             //calculate the fee
-            uint256 strataxFee = (
-                details.collateralAmount * IFeeCollector(feeCollector).strataxFee() * details.desiredLeverage
-            ) / FLASHLOAN_FEE_PREC;
+            uint256 strataxFee =
+                (details.collateralAmount * IFeeCollector(feeCollector).strataxFee() * details.desiredLeverage)
+                    / (FLASHLOAN_FEE_PREC * LEVERAGE_PRECISION);
 
             // subtract the fee from the collateral
             details.collateralAmount = details.collateralAmount - strataxFee;
@@ -512,10 +548,6 @@ contract Stratax is Initializable {
         }
         require(details.borrowTokenPrice > 0, "Borrow token price must be > 0");
 
-        // Calculate maximum theoretical leverage and validate desired leverage
-        uint256 maxLeverage = getMaxLeverage(ltv);
-        require(details.desiredLeverage <= maxLeverage, "Desired leverage exceeds maximum");
-
         // Flash loan amount = collateral × (leverage - 1)
         // flashLoanAmount = C × (L - 1) / LEVERAGE_PRECISION
         flashLoanAmount =
@@ -525,18 +557,18 @@ contract Stratax is Initializable {
         uint256 totalCollateral = details.collateralAmount + flashLoanAmount;
 
         // Calculate total collateral value in USD (with proper decimal handling)
-        // totalCollateralValueUSD = (totalCollateral * collateralPrice) / (10^collateralDec)
+        // totalCollateralValueUsd = (totalCollateral * collateralPrice) / (10^collateralDec)
         // Result is in USD with 8 decimals
-        uint256 totalCollateralValueUSD =
+        uint256 totalCollateralValueUsd =
             (totalCollateral * details.collateralTokenPrice) / (10 ** collateralTokenDecimals);
 
         // Calculate borrow value in USD (with 8 decimals)
-        // Apply safety margin to ensure healthy position: borrowValueUSD = (totalCollateralValueUSD * ltv * BORROW_SAFETY_MARGIN) / (LTV_PRECISION * 10000)
-        uint256 borrowValueUSD = (totalCollateralValueUSD * ltv * BORROW_SAFETY_MARGIN) / (LTV_PRECISION * 10000);
+        // Apply safety margin to ensure healthy position: borrowValueUsd = (totalCollateralValueUsd * ltv * borrowSafetyMargin) / (LTV_PRECISION * 10000)
+        uint256 borrowValueUsd = (totalCollateralValueUsd * ltv * borrowSafetyMargin) / (LTV_PRECISION * 10000);
 
         // Convert borrow value to borrow token amount
-        // borrowAmount = (borrowValueUSD * 10^borrowTokenDec) / borrowTokenPrice
-        borrowAmount = (borrowValueUSD * (10 ** borrowTokenDecimals)) / details.borrowTokenPrice;
+        // borrowAmount = (borrowValueUsd * 10^borrowTokenDec) / borrowTokenPrice
+        borrowAmount = (borrowValueUsd * (10 ** borrowTokenDecimals)) / details.borrowTokenPrice;
 
         // Ensure borrow amount when swapped back covers flash loan + fee
         uint256 flashLoanFee = (flashLoanAmount * flashLoanFeeBps) / FLASHLOAN_FEE_PREC;
@@ -555,25 +587,35 @@ contract Stratax is Initializable {
 
     /**
      * @notice Calculates the amount of collateral to withdraw and debt to repay for unwinding a position
-     * @return collateralToWithdraw The amount of collateral to withdraw from Aave
+     * @param _debtToRepay the amount of debt to repay on the position reducing the position size
+     * @return collateralToWithdraw The amount of collateral to withdraw from Aave (includes slippage buffer)
      * @return debtAmount The total debt amount to repay
+     * @return strataxFee The Stratax protocol fee amount
+     * @dev if the _debtTeRepay is equal to or more than the actual debt, the position will be fully closed
      */
-    function calculateUnwindParams() public view returns (uint256 collateralToWithdraw, uint256 debtAmount) {
+    function calculateUnwindParams(uint256 _debtToRepay)
+        public
+        view
+        returns (uint256 collateralToWithdraw, uint256 debtAmount, uint256 strataxFee)
+    {
         // Get the address of the debt token
         (,, address debtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
         debtAmount = IERC20(debtToken).balanceOf(address(this));
+        if (debtAmount <= _debtToRepay) {
+            _debtToRepay = debtAmount;
+        }
+
         uint256 debtTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
         uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 strataxFee = (debtAmount * IFeeCollector(feeCollector).strataxFee()) / FLASHLOAN_FEE_PREC;
-        uint256 flashLoanFeeAmount = (debtAmount * flashLoanFeeBps) / FLASHLOAN_FEE_PREC;
-        collateralToWithdraw = (
-            debtTokenPrice * (debtAmount + flashLoanFeeAmount + strataxFee) * 10 ** collateralTokenDecimals
-        ) / (collateralTokenPrice * 10 ** borrowTokenDecimals);
+        strataxFee = (_debtToRepay * IFeeCollector(feeCollector).strataxFee()) / FLASHLOAN_FEE_PREC;
+        uint256 flashLoanFeeAmount = (_debtToRepay * flashLoanFeeBps) / FLASHLOAN_FEE_PREC;
+        collateralToWithdraw = (debtTokenPrice * (_debtToRepay + flashLoanFeeAmount) * 10 ** collateralTokenDecimals)
+            / (collateralTokenPrice * 10 ** borrowTokenDecimals);
 
-        // Account for 5% slippage in swap
+        // Account for 5% slippage in swap, we will re-supply the excess amount to aave
         collateralToWithdraw = (collateralToWithdraw * 1050) / 1000; // There should Always be enough collateral to unwind a position
 
-        return (collateralToWithdraw, debtAmount);
+        return (collateralToWithdraw, _debtToRepay, strataxFee);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -581,13 +623,19 @@ contract Stratax is Initializable {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Internal function to handle opening a leveraged position
-     * @dev Executes the flash loan callback logic for opening positions
-     * @param _asset The flash loaned asset address
+     * @notice Internal function to handle opening a leveraged position via flash loan callback
+     * @dev Executes the following steps:
+     *      1. Calculate and pay Stratax fee
+     *      2. Supply collateral (flash loan + user collateral) to Aave
+     *      3. Borrow debt tokens from Aave
+     *      4. Swap borrowed tokens to collateral token via 1inch
+     *      5. Repay flash loan with swap proceeds
+     *      6. Supply any leftover collateral back to Aave
+     * @param _asset The flash loaned asset address (collateral token)
      * @param _amount The flash loan amount
-     * @param _premium The flash loan fee
+     * @param _premium The Aave flash loan fee
      * @param _params Encoded parameters containing operation type and FlashLoanParams
-     * @return bool Returns true if operation succeeds
+     * @return bool Returns true if operation succeeds, reverts otherwise
      */
     function _executeOpenOperation(address _asset, uint256 _amount, uint256 _premium, bytes calldata _params)
         internal
@@ -627,7 +675,7 @@ contract Stratax is Initializable {
                 IERC20(flashParams.borrowToken).balanceOf(address(this)) == prevBal, "Borrow token left in contract"
             );
 
-            uint256 totalDebt = _amount + _premium;
+            uint256 totalDebt = _amount + _premium + strataxFeeAmount;
             require(returnAmt >= totalDebt, "Insufficient funds to repay flash loan");
 
             if (returnAmt > totalDebt) {
@@ -650,9 +698,9 @@ contract Stratax is Initializable {
     }
 
     /**
-     * @notice Calculates the desired leverage based on flash loan amount and collateral
-     * @dev Reverses the calculation from calculateOpenParams
-     * @param flashLoanAmount The amount that was flash loaned
+     * @notice Calculates the desired leverage from flash loan and collateral amounts
+     * @dev Uses quadratic formula to reverse-engineer the leverage from calculateOpenParams
+     * @param flashLoanAmount The flash loan amount used in the position
      * @param collateralAmount The original collateral amount provided by user
      * @return desiredLeverage The calculated desired leverage with 4 decimals
      */
@@ -661,110 +709,56 @@ contract Stratax is Initializable {
         view
         returns (uint256 desiredLeverage)
     {
-        // From calculateOpenParams logic:
-        // strataxFee = (collateralAmount * fee * desiredLeverage) / FLASHLOAN_FEE_PREC
-        // collateralAfterFee = collateralAmount - strataxFee
-        // flashLoanAmount = (collateralAfterFee * (desiredLeverage - LEVERAGE_PRECISION)) / LEVERAGE_PRECISION
-        //
-        // Solving for desiredLeverage:
-        // Let F = strataxFee rate, C = collateralAmount, L = desiredLeverage, FL = flashLoanAmount
-        // collateralAfterFee = C - (C * F * L / FLASHLOAN_FEE_PREC) = C * (1 - F * L / FLASHLOAN_FEE_PREC)
-        // FL = [C * (1 - F * L / FLASHLOAN_FEE_PREC) * (L - LEVERAGE_PRECISION)] / LEVERAGE_PRECISION
-        //
-        // Simplifying (where PREC = FLASHLOAN_FEE_PREC = LEVERAGE_PRECISION = 10000):
-        // FL * PREC = C * (1 - F * L / PREC) * (L - PREC)
-        // FL * PREC = C * (PREC - F * L) * (L - PREC) / PREC
-        // FL * PREC^2 = C * (PREC - F * L) * (L - PREC)
-        // FL * PREC^2 = C * (PREC * L - PREC^2 - F * L^2 + F * L * PREC)
-        // FL * PREC^2 = C * (-F * L^2 + L * (PREC + F * PREC) - PREC^2)
-        // 0 = -C * F * L^2 + C * L * (PREC + F * PREC) - C * PREC^2 - FL * PREC^2
-        // C * F * L^2 - C * L * (PREC + F * PREC) + C * PREC^2 + FL * PREC^2 = 0
-        //
-        // Using quadratic formula: L = [b ± sqrt(b^2 - 4ac)] / 2a
-        // where: a = C * F
-        //        b = -C * (PREC + F * PREC)
-        //        c = C * PREC^2 + FL * PREC^2
-
         uint256 fee = IFeeCollector(feeCollector).strataxFee();
-        uint256 PREC = FLASHLOAN_FEE_PREC; // = LEVERAGE_PRECISION = 10000
+        // FLASHLOAN_FEE_PREC == LEVERAGE_PREC
 
-        // Handle edge case where fee is 0
+        // Handle edge case where fee is 0 (simple linear equation)
         if (fee == 0) {
-            // Simple case: flashLoanAmount = collateralAmount * (L - PREC) / PREC
-            // L = (flashLoanAmount * PREC / collateralAmount) + PREC
-            return (flashLoanAmount * PREC) / collateralAmount + PREC;
+            // flashLoanAmount = collateralAmount * (L - PREC) / PREC
+            // Therefore: L = (flashLoanAmount * PREC / collateralAmount) + PREC
+            return (flashLoanAmount * FLASHLOAN_FEE_PREC) / collateralAmount + FLASHLOAN_FEE_PREC;
         }
 
-        // Quadratic coefficients (scaled to avoid overflow)
-        uint256 a = collateralAmount * fee; // precision = collateral + fee
-        uint256 b = collateralAmount * (PREC + fee * PREC / PREC); // = collateralAmount * (PREC + fee). // precision = collateral + fee
-        //uint256 c = (collateralAmount + flashLoanAmount) * PREC * PREC; // precision = collateral + fee + fee <-- is this right?
-        uint256 c = (collateralAmount + flashLoanAmount) * PREC; // @notice removed the PREC multiplication at the end
+        // With fees, we need to solve a quadratic equation
+        // Standard form: aL² + bL + c = 0
+        // Using quadratic formula: L = (-b ± sqrt(b² - 4ac)) / 2a
 
-        // Calculate discriminant: b^2 - 4ac
-        uint256 discriminant = b * b - 4 * a * c / PREC; // Divide by PREC to keep scale manageable
-        //@note update decrease the precision of the discriminant
-        discriminant = discriminant / (PREC * collateralTokenPrecision); // discrimnant precision should be (collateral + fee)
+        uint256 a = collateralAmount * fee;
+        uint256 b = collateralAmount * (FLASHLOAN_FEE_PREC + fee);
+        uint256 c = (collateralAmount + flashLoanAmount) * FLASHLOAN_FEE_PREC;
 
-        //precision tracking notes
-        /* 
-        original:
-        (2*collateral + 2* fee) - ((collateral + fee) + (collateral + fee + fee))
-        thus, discriminant is not valid since the precision is not the same you cannot add
-        
-        updated:
-        (2*collateral + 2* fee) - ((collateral + fee) + (collateral + fee))
-        each side of the subtraction has the same precision so it is safe to subtract
-        
+        // Calculate discriminant: b² - 4ac
+        uint256 discriminant = b * b - 4 * a * c;
+        uint256 sqrtDiscriminant = sqrt(discriminant);
 
-        disctriminant precision = (2*collateral + 2* fee)
-        i.e. collateral has 18 decimals and fee has 4
-        the discriminant has 2(18) + 2(4) = 44 decimals
-
-        */
-
-        // Take positive root: L = (b + sqrt(discriminant)) / (2a)
-        uint256 sqrtDiscriminant = _sqrt(discriminant);
-        desiredLeverage = (b + sqrtDiscriminant) * PREC / (2 * a); // this should be correct after updated code
+        // Take the positive root: L = (b - sqrt(discriminant)) * PREC / (2a)
+        desiredLeverage = (b - sqrtDiscriminant) * FLASHLOAN_FEE_PREC / (2 * a);
 
         return desiredLeverage;
     }
 
-    /**
-     * @notice Calculates square root using Babylonian method
-     * @param x The number to calculate square root of
-     * @return y The square root
-     * @dev not constant time
-     */
-    function _sqrt(uint256 x) internal pure returns (uint256 y) {
-        if (x == 0) return 0;
-        uint256 z = (x + 1) / 2;
-        y = x;
-        while (z < y) {
-            y = z;
-            z = (x / z + z) / 2;
-        }
-    }
-
-    function _payStrataxFee(address _token, uint256 _tradeSize, uint256 _desiredLeverage)
-        internal
-        returns (uint256 feeAmount)
+    function calculateDesiredLeverage(uint256 _flashLoanAmount, uint256 _collateralAmount)
+        public
+        view
+        returns (uint256 desiredLeverage)
     {
-        feeAmount = (_tradeSize * IFeeCollector(feeCollector).strataxFee() * _desiredLeverage)
-            / (FLASHLOAN_FEE_PREC * LEVERAGE_PRECISION);
-        IERC20(_token).approve(feeCollector, feeAmount);
-        IFeeCollector(feeCollector).collectFees(_token, feeAmount);
-        return feeAmount;
+        return desiredLeverage = _calculateDesiredLeverage(_flashLoanAmount, _collateralAmount);
     }
 
     /**
-     * @notice Internal function to handle unwinding a leveraged position
-     * @dev Executes the flash loan callback logic for unwinding positions
-     * @param _asset The flash loaned asset address
-     * @param _amount The flash loan amount
-     * @param _premium The flash loan fee
+     * @notice Internal function to handle unwinding a leveraged position via flash loan callback
+     * @dev Executes the following steps:
+     *      1. Repay Aave debt with flash loaned tokens
+     *      2. Withdraw collateral from Aave proportional to debt repaid
+     *      3. Swap collateral to debt token via 1inch
+     *      4. Calculate and pay Stratax fee
+     *      5. Repay flash loan + premium
+     *      6. Supply any leftover tokens back to Aave
+     * @param _asset The flash loaned asset address (debt token)
+     * @param _amount The flash loan amount (debt to repay)
+     * @param _premium The Aave flash loan fee
      * @param _params Encoded parameters containing operation type and UnwindParams
-     * @return bool Returns true if operation succeeds
+     * @return bool Returns true if operation succeeds, reverts otherwise
      */
     function _executeUnwindOperation(address _asset, uint256 _amount, uint256 _premium, bytes calldata _params)
         internal
@@ -778,22 +772,25 @@ contract Stratax is Initializable {
 
         // Step 2: Calculate and withdraw only the collateral that backed the repaid debt
         uint256 withdrawnAmount;
+        uint256 strataxFeeInCollateral;
         {
-            // Get LTV from Aave for the collateral token
-            (,, uint256 liqThreshold,,,,,,,) =
-                aaveDataProvider.getReserveConfigurationData(unwindParams.collateralToken);
-
             // Get prices and decimals
             uint256 debtTokenPrice = IStrataxOracle(strataxOracle).getPrice(_asset);
             uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(unwindParams.collateralToken);
             require(debtTokenPrice > 0 && collateralTokenPrice > 0, "Invalid prices");
 
-            // Calculate collateral to withdraw: (debtAmount * debtPrice * collateralDec * LTV_PRECISION) / (collateralPrice * debtDec * ltv)
-            uint256 collateralToWithdraw = (
-                _amount * debtTokenPrice * (10 ** IERC20(unwindParams.collateralToken).decimals()) * LTV_PRECISION
-            ) / (collateralTokenPrice * (10 ** IERC20(_asset).decimals()) * liqThreshold);
+            //use the same logic when calculating the undwin params
+            uint256 strataxFee = (_amount * IFeeCollector(feeCollector).strataxFee()) / FLASHLOAN_FEE_PREC;
+            strataxFeeInCollateral = (debtTokenPrice * (strataxFee) * 10 ** collateralTokenDecimals)
+                / (collateralTokenPrice * 10 ** borrowTokenDecimals);
+            uint256 collateralToWithdraw = (debtTokenPrice * (_amount + _premium) * 10 ** collateralTokenDecimals)
+                / (collateralTokenPrice * 10 ** borrowTokenDecimals);
+
+            //account for swap slippage and add the fee for withdrawal
+            collateralToWithdraw = (collateralToWithdraw * 1050) / 1000 + strataxFeeInCollateral; // 5% slippage
 
             withdrawnAmount = aavePool.withdraw(unwindParams.collateralToken, collateralToWithdraw, address(this));
+            withdrawnAmount = withdrawnAmount - strataxFeeInCollateral;
         }
 
         // Step 3: Swap collateral to debt token to repay flash loan
@@ -801,17 +798,13 @@ contract Stratax is Initializable {
         uint256 returnAmount = _call1InchSwap(unwindParams.oneInchSwapData, _asset, unwindParams.minReturnAmount);
 
         //4. Pay stratax fee
-        uint256 strataxFeeAmount;
         {
-            uint256 desiredLev = _calculateDesiredLeverage(_amount, unwindParams.collateralToWithdraw);
-            strataxFeeAmount = (_amount * IFeeCollector(feeCollector).strataxFee() * desiredLev)
-                / (FLASHLOAN_FEE_PREC * LEVERAGE_PRECISION);
-            IERC20(_asset).approve(feeCollector, strataxFeeAmount);
-            IFeeCollector(feeCollector).collectFees(_asset, strataxFeeAmount);
+            IERC20(collateralToken).approve(feeCollector, strataxFeeInCollateral);
+            IFeeCollector(feeCollector).collectFees(collateralToken, strataxFeeInCollateral);
         }
 
         // Step 5: Repay flash loan
-        uint256 totalDebt = _amount + _premium + strataxFeeAmount;
+        uint256 totalDebt = _amount + _premium;
         require(returnAmount >= totalDebt, "Insufficient funds to repay flash loan");
 
         // Supply any leftover tokens back to Aave
@@ -821,6 +814,7 @@ contract Stratax is Initializable {
             aavePool.supply(_asset, returnAmount - totalDebt, address(this), 0);
         }
 
+        // approve aave to retrive payment for the flash loan
         IERC20(_asset).approve(address(aavePool), totalDebt);
 
         emit PositionUnwound(user, unwindParams.collateralToken, _asset, _amount, withdrawnAmount);
@@ -829,11 +823,12 @@ contract Stratax is Initializable {
     }
 
     /**
-     * @notice Internal function to execute a token swap via 1inch
-     * @dev Performs low-level call to 1inch router and validates return amount
-     * @param _swapParams Encoded calldata for the 1inch swap
+     * @notice Internal function to execute a token swap via 1inch aggregator
+     * @dev Performs low-level call to 1inch router with pre-encoded swap data
+     *      The swap parameters must be obtained from the 1inch API beforehand
+     * @param _swapParams Encoded calldata for the 1inch swap (from 1inch API)
      * @param _asset Address of the asset being swapped to
-     * @param _minReturnAmount Minimum acceptable return amount (slippage protection)
+     * @param _minReturnAmount Minimum acceptable return amount for slippage protection
      * @return returnAmount Actual amount received from the swap
      */
     function _call1InchSwap(bytes memory _swapParams, address _asset, uint256 _minReturnAmount)
@@ -854,5 +849,89 @@ contract Stratax is Initializable {
         // Sanity check
         require(returnAmount >= _minReturnAmount, "Insufficient return amount from swap");
         return returnAmount;
+    }
+
+    uint256 constant BASE_COLLATERAL = 1e18; // virtual unit
+
+    /**
+     * @notice Public function to calculate the max leverage while considering fees and safety margins
+     * @dev uses binary search and should call this off chain to save gas
+     * @return maxLeverage The actual leverage that can be achieved after fees
+     */
+    function getMaxAchievableLeverageBinary() public view returns (uint256 maxLeverage) {
+        (, uint256 ltv,,,,,,,,) = aaveDataProvider.getReserveConfigurationData(collateralToken);
+        require(ltv > 0, "Asset not collateralizable");
+
+        uint256 effectiveLtv = (ltv * borrowSafetyMargin) / FLASHLOAN_FEE_PREC;
+        require(effectiveLtv > 0, "Invalid effective LTV");
+
+        uint256 strataxFee = IFeeCollector(feeCollector).strataxFee();
+
+        // Search range: [1x, theoretical max]
+        uint256 low = LEVERAGE_PRECISION;
+        uint256 high = getMaxLeverage(ltv); // e.g. 1 / (1 - LTV)
+        uint256 best = low;
+
+        while (low <= high) {
+            uint256 mid = low + (high - low) / 2;
+
+            if (_isLeverageSafe(mid, effectiveLtv, strataxFee)) {
+                best = mid;
+                low = mid + 1;
+            } else {
+                high = mid - 1;
+            }
+        }
+
+        return best;
+    }
+
+    /**
+     * @notice Internal function to verify leverage is safe
+     * @dev considers stratax fee and flashloan fee when verifying leverage
+     * @param _leverage leverage of the position
+     * @param _effectiveLtv This includes the borrowSafetyMargin
+     * @param _strataxFee Strtax fee as a percent with 4 decimals of precision
+     * @return isSafe whether the leverage is achievable
+     */
+    function _isLeverageSafe(uint256 _leverage, uint256 _effectiveLtv, uint256 _strataxFee)
+        internal
+        view
+        returns (bool)
+    {
+        // Borrowed amount to reach leverage L:
+        // borrowed = C * (L - 1)
+        uint256 borrowed = (BASE_COLLATERAL * (_leverage - LEVERAGE_PRECISION)) / LEVERAGE_PRECISION;
+
+        // Flash loan fee
+        uint256 flashFee = (borrowed * flashLoanFeeBps) / FLASHLOAN_FEE_PREC;
+
+        uint256 totalDebt = borrowed + flashFee;
+
+        // Stratax fee scales with notional × leverage
+        // fee = C * L * strataxFee
+        uint256 protocolFee = (BASE_COLLATERAL * _leverage * _strataxFee) / (LEVERAGE_PRECISION * FLASHLOAN_FEE_PREC);
+
+        // Effective collateral after protocol fee
+        if (protocolFee >= BASE_COLLATERAL) return false;
+
+        uint256 effectiveCollateral = (BASE_COLLATERAL + borrowed) - protocolFee;
+
+        // Max borrow allowed by Aave LTV
+        uint256 maxBorrow = (effectiveCollateral * _effectiveLtv) / (FLASHLOAN_FEE_PREC);
+
+        return totalDebt <= maxBorrow;
+    }
+
+    /**
+     * @notice public wrapper around the internal function
+     * @dev considers stratax fee and flashloan fee when verifying leverage
+     * @param _leverage leverage of the position
+     * @param _effectiveLtv This includes the borrowSafetyMargin
+     * @param _strataxFee Strtax fee as a percent with 4 decimals of precision
+     * @return isSafe bool whether the supplied leverage is achievable
+     */
+    function isLeverageSafe(uint256 _leverage, uint256 _effectiveLtv, uint256 _strataxFee) public view returns (bool) {
+        return _isLeverageSafe(_leverage, _effectiveLtv, _strataxFee);
     }
 }
