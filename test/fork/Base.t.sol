@@ -114,21 +114,22 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
         strataxPositionNftImplementation = new StrataxPositionNft();
 
         // Initialize StrataxPositionNft via TransparentUpgradeableProxy
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams = StrataxPositionNft
-            .StrataxPositionNftInitParams({
-            strataxBeacon: address(strataxBeacon),
-            aavePool: AAVE_POOL,
-            aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            oneInchRouter: INCH_ROUTER,
-            strataxOracle: address(strataxOracle),
-            feeCollector: address(feeCollector),
-            owner: address(this),
-            uri: "https://stratax.io/nft/"
-        });
+        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+            StrataxPositionNft.StrataxPositionNftInitParams({
+                strataxBeacon: address(strataxBeacon),
+                aavePool: AAVE_POOL,
+                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+                oneInchRouter: INCH_ROUTER,
+                strataxOracle: address(strataxOracle),
+                feeCollector: address(feeCollector),
+                owner: address(this),
+                uri: "https://stratax.io/nft/"
+            });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        nftProxy =
-            new TransparentUpgradeableProxy(address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData);
+        nftProxy = new TransparentUpgradeableProxy(
+            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
+        );
         strataxPositionNft = StrataxPositionNft(address(nftProxy));
 
         // Mint position NFT which deploys Stratax proxy
@@ -162,6 +163,7 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
             // Extract just the filename (after last /)
             uint256 lastSlash = 0;
             for (uint256 j = 0; j < filenameBytes.length; j++) {
+                // forge-lint: disable-next-line(unsafe-typecast)
                 if (filenameBytes[j] == bytes1("/")) {
                     lastSlash = j + 1;
                 }

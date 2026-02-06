@@ -75,6 +75,7 @@ contract StrataxOracle {
         (, int256 answer,,,) = priceFeed.latestRoundData();
         require(answer > 0, "Invalid price from oracle");
 
+        // forge-lint: disable-next-line(unsafe-typecast)
         price = uint256(answer);
     }
 

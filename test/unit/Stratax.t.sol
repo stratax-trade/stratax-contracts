@@ -136,11 +136,19 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         // Mock oracle prices (8 decimals)
         uint256 usdcPrice = 1e8; // $1.00
         uint256 wethPrice = 2000e8; // $2000.00
+        // forge-lint: disable-next-line(unsafe-typecast)
         vm.mockCall(
-            USDC_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(usdcPrice), 0, 0, 0)
+            USDC_PRICE_FEED,
+            abi.encodeWithSignature("latestRoundData()"),
+            // forge-lint: disable-next-line(unsafe-typecast)
+            abi.encode(0, int256(usdcPrice), 0, 0, 0)
         );
+
         vm.mockCall(
-            WETH_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(wethPrice), 0, 0, 0)
+            WETH_PRICE_FEED,
+            abi.encodeWithSignature("latestRoundData()"),
+            // forge-lint: disable-next-line(unsafe-typecast)
+            abi.encode(0, int256(wethPrice), 0, 0, 0)
         );
 
         // Setup fee collector that returns 0 fee for simpler math
@@ -240,10 +248,17 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
             );
 
             vm.mockCall(
-                USDC_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(usdcPrice), 0, 0, 0)
+                USDC_PRICE_FEED,
+                abi.encodeWithSignature("latestRoundData()"),
+                // forge-lint: disable-next-line(unsafe-typecast)
+                abi.encode(0, int256(usdcPrice), 0, 0, 0)
             );
+            // forge-lint: disable-next-line(unsafe-typecast)
             vm.mockCall(
-                WETH_PRICE_FEED, abi.encodeWithSignature("latestRoundData()"), abi.encode(0, int256(wethPrice), 0, 0, 0)
+                WETH_PRICE_FEED,
+                abi.encodeWithSignature("latestRoundData()"),
+                // forge-lint: disable-next-line(unsafe-typecast)
+                abi.encode(0, int256(wethPrice), 0, 0, 0)
             );
 
             // Setup fee collector with 1 basis point (0.01%) fee to avoid underflow bug

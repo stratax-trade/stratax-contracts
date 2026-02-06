@@ -75,7 +75,7 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     /// @notice Address of the fee collector for opening and closing positions
     address public feeCollector;
 
-    /// @notice the default value which can be changed by the NFT owner
+    /// @notice the default value for safety margin which can be modified by the NFT owner
     uint256 public defaultBorrowSafetyMargin;
 
     /// @notice Counter for token IDs (position types)
