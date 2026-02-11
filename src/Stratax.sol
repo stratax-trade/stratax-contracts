@@ -48,11 +48,12 @@ contract Stratax is Initializable {
     /*//////////////////////////////////////////////////////////////
                             TYPE DECLARATIONS
     //////////////////////////////////////////////////////////////*/
+
     using SafeERC20 for IERC20;
 
     /// @notice Enum for flash loan operation types
     enum OperationType {
-        /// @notice Opening a new leveraged position
+        /// @notice Opening/Increasing leveraged position
         OPEN,
         /// @notice Unwinding an existing leveraged position
         UNWIND
@@ -163,9 +164,6 @@ contract Stratax is Initializable {
     /// @notice Decimals of the collateral token
     uint256 public collateralTokenDecimals;
 
-    /// @notice Precision of the collateral token in storage for gas savings
-    uint256 public collateralTokenPrecision;
-
     /// @notice Decimals of the borrow token
     uint256 public borrowTokenDecimals;
 
@@ -174,9 +172,6 @@ contract Stratax is Initializable {
 
     /// @notice Address for the fee collector which takes a opening and closing fee
     address public feeCollector;
-
-    /// @notice Contract owner address
-    address public owner;
 
     /// @notice Flash loan fee in basis points (e.g., 9 = 0.09%)
     uint256 public flashLoanFeeBps;
@@ -251,7 +246,7 @@ contract Stratax is Initializable {
 
         // Fetch and store token decimals
         collateralTokenDecimals = IERC20Metadata(params.collateralToken).decimals();
-        collateralTokenPrecision = 10 ** collateralTokenDecimals;
+
         borrowTokenDecimals = IERC20Metadata(params.borrowToken).decimals();
 
         // Set borrow safety margin with default if not provided
@@ -335,21 +330,11 @@ contract Stratax is Initializable {
     }
 
     /**
-     * @notice Sets the Stratax Oracle address
-     * @param _strataxOracle The new oracle address
-     */
-    function setStrataxOracle(address _strataxOracle) external onlyOwner {
-        require(_strataxOracle != address(0), "Invalid oracle address");
-        strataxOracle = _strataxOracle;
-    }
-
-    /**
      * @notice Sets the flash loan fee in basis points
      * @dev updates the flash loan fee from Aave
      */
     function updateFlashLoanFee() external {
         flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL();
-        //
         require(flashLoanFeeBps < FLASHLOAN_FEE_PREC, "Fee must be < 100%");
     }
 
@@ -360,15 +345,6 @@ contract Stratax is Initializable {
      */
     function recoverTokens(address _token, uint256 _amount) external onlyOwner {
         IERC20(_token).safeTransfer(msg.sender, _amount);
-    }
-
-    /**
-     * @notice Updates the owner address
-     * @param _newOwner The new owner address
-     */
-    function transferOwnership(address _newOwner) external onlyOwner {
-        require(_newOwner != address(0), "Invalid address");
-        owner = _newOwner;
     }
 
     /**
@@ -1062,5 +1038,9 @@ contract Stratax is Initializable {
 
     function getFreeCollateral() public view returns (uint256) {
         return _getFreeCollateral();
+    }
+
+    function owner() public view returns (address) {
+        return strataxPositionNft.ownerOf(tokenId);
     }
 }

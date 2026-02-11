@@ -179,7 +179,6 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         Stratax testStratax = Stratax(testStrataxProxy);
 
         vm.prank(ownerTrader);
-        testStratax.setStrataxOracle(address(strataxOracle));
 
         // Test with multiple leverage values
         uint256[] memory leverages = new uint256[](4);
@@ -291,7 +290,6 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
         }
 
         vm.prank(ownerTrader);
-        testStratax.setStrataxOracle(address(strataxOracle));
 
         // Testing with leverage values from 1.01x to 5.0x
         uint256[] memory leverages = new uint256[](22);
