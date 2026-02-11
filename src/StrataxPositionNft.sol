@@ -238,13 +238,18 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
 
     /**
      * @notice Sets the base URI for token metadata
-     * n     * @dev Can only be called by the contract owner
+     * @dev Can only be called by the contract owner
      * @param baseUri The new base URI
      */
     function setBaseURI(string memory baseUri) external onlyOwner {
         _baseTokenUri = baseUri;
     }
 
+    /**
+     * @notice Sets the default safety margin to deploy contracts with
+     * @dev Can only be called by the contract owner
+     * @param _borrowSafetyMargin The new safety margin < 10_0000
+     */
     function setDefaultBorrowSafetyMargin(uint256 _borrowSafetyMargin) public onlyOwner {
         require(_borrowSafetyMargin < BORROW_SAFETY_PRECISION, "Invlaid borrowSafetMargin");
         defaultBorrowSafetyMargin = _borrowSafetyMargin;

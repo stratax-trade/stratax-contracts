@@ -42,7 +42,7 @@ contract StrataxForkTest is StrataxForkTestBase {
 
         uint256 collateralAmount = 1000 * 10 ** 6;
         (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
-            Stratax.TradeDetails({
+            Stratax.CalcOpenParams({
                 desiredLeverage: 30_000,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: 0,
@@ -72,7 +72,7 @@ contract StrataxForkTest is StrataxForkTestBase {
         // Open position
         uint256 collateralAmount = 1000 * 10 ** 6;
         (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
-            Stratax.TradeDetails({
+            Stratax.CalcOpenParams({
                 desiredLeverage: 30_000,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: 0,

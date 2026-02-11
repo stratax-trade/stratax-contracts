@@ -192,7 +192,7 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
             uint256 desiredLeverage = leverages[i];
             uint256 collateralAmount = 1000e6; // 1000 USDC (6 decimals)
 
-            Stratax.TradeDetails memory details = Stratax.TradeDetails({
+            Stratax.CalcOpenParams memory details = Stratax.CalcOpenParams({
                 desiredLeverage: desiredLeverage,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: usdcPrice,
@@ -323,7 +323,7 @@ contract StrataxUnitTest is Test, ConstantsEtMainnet {
             uint256 desiredLeverage = leverages[i];
             uint256 collateralAmount = 1000e6; // 1000 USDC (6 decimals)
 
-            Stratax.TradeDetails memory details = Stratax.TradeDetails({
+            Stratax.CalcOpenParams memory details = Stratax.CalcOpenParams({
                 desiredLeverage: desiredLeverage,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: usdcPrice,

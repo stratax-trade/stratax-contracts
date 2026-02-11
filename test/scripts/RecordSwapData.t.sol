@@ -100,7 +100,7 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
 
         // Calculate params for opening position
         (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
-            Stratax.TradeDetails({
+            Stratax.CalcOpenParams({
                 desiredLeverage: 30_000,
                 collateralAmount: collateralAmount,
                 collateralTokenPrice: 0,
