@@ -8,12 +8,30 @@ import {
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
+import {IProtocolDataProvider} from "./interfaces/external/IProtocolDataProvider.sol";
+import {IStrataxOracle} from "./interfaces/internal/IStrataxOracle.sol";
+import {IFeeCollector} from "./interfaces/internal/IFeeCollector.sol";
+import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
+import {IPool} from "./interfaces/external/IPool.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
+import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {Stratax} from "./Stratax.sol";
+import {StrataxCalculations} from "./libraries/StrataxCalculations.sol";
 
-contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721EnumerableUpgradeable, OwnableUpgradeable {
+contract StrataxPositionNft is
+    Initializable,
+    ERC721Upgradeable,
+    ERC721EnumerableUpgradeable,
+    OwnableUpgradeable,
+    UUPSUpgradeable,
+    IERC721Receiver
+{
     /*//////////////////////////////////////////////////////////////
                             TYPE DECLARATIONS
     //////////////////////////////////////////////////////////////*/
+    using SafeERC20 for IERC20;
 
     /// @notice Struct for StrataxPositionNft initialization parameters
     struct StrataxPositionNftInitParams {
@@ -54,9 +72,6 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice precision for the defaultBorrowSafetyMargin
-    uint256 public constant BORROW_SAFETY_PRECISION = 1e4;
-
     /// @notice Address of the Stratax Beacon for deploying proxy contracts
     address public strataxBeacon;
 
@@ -78,8 +93,14 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     /// @notice the default value for safety margin which can be modified by the NFT owner
     uint256 public defaultBorrowSafetyMargin;
 
+    /// @notice Default offset from maximum leverage with 4 decimals (e.g., 75 = 0.75%)
+    uint256 public defaultMaxLeverageOffset;
+
+    /// @notice flash loan fee bps from Aave pool, cached for gas optimization
+    uint256 public flashLoanFeeBps;
+
     /// @notice Counter for token IDs (position types)
-    uint256 private _nextTokenId;
+    uint256 public currentTokenId;
 
     /// @notice Mapping from token ID to position details
     mapping(uint256 => Position) public positions;
@@ -118,6 +139,21 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     /// @param newBeacon New Stratax beacon address
     event StrataxBeaconUpdated(address indexed oldBeacon, address indexed newBeacon);
 
+    /// @notice Emitted when the default borrow safety margin is updated
+    /// @param oldMargin Previous default borrow safety margin
+    /// @param newMargin New default borrow safety margin
+    event DefaultBorrowSafetyMarginUpdated(uint256 indexed oldMargin, uint256 indexed newMargin);
+
+    /// @notice Emitted when the Aave flash loan fee is updated
+    /// @param oldFeeBps Previous flash loan fee in basis points
+    /// @param newFeeBps New flash loan fee in basis points
+    event AaveFlashLoanFeeUpdated(uint256 indexed newFeeBps, uint256 indexed oldFeeBps);
+
+    /// @notice Emitted when the default max leverage offset is updated
+    /// @param oldOffset Previous default max leverage offset
+    /// @param newOffset New default max leverage offset
+    event DefaultMaxLeverageOffsetUpdated(uint256 indexed oldOffset, uint256 indexed newOffset);
+
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
     //////////////////////////////////////////////////////////////*/
@@ -147,38 +183,129 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
         __ERC721Enumerable_init();
         __Ownable_init(params.owner);
 
+        flashLoanFeeBps = IPool(params.aavePool).FLASHLOAN_PREMIUM_TOTAL();
         _baseTokenUri = params.uri;
-
         strataxBeacon = params.strataxBeacon;
         aavePool = params.aavePool;
         aaveDataProvider = params.aaveDataProvider;
         oneInchRouter = params.oneInchRouter;
         strataxOracle = params.strataxOracle;
         feeCollector = params.feeCollector;
-        defaultBorrowSafetyMargin = 9900; // Default to 99% of max LTV
-        _nextTokenId = 1; // Start token IDs at 1
+
+        //default deployment settings
+        defaultBorrowSafetyMargin = 9950; // Default to 99.5% of max LTV
+        defaultMaxLeverageOffset = 75;
+
+        currentTokenId = 1; // Start token IDs at 1
     }
 
     /*//////////////////////////////////////////////////////////////
                         EXTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
+    struct InitPositionParams {
+        uint256 flashLoanAmount;
+        uint256 collateralAmount;
+        uint256 borrowAmount;
+        bytes oneInchSwapData;
+        uint256 minReturnAmount;
+    }
+
     /**
-     * @notice Mints a new position NFT and deploys a dedicated Stratax proxy contract
-     * @dev Deploys a new BeaconProxy for each position to hold position data
+     * @notice Calculates the flash loan and borrow amounts needed for opening a position when minting
+     * @dev Uses the shared StrataxCalculations library for consistent calculation logic
+     * @param collateralToken Address of the collateral token
+     * @param borrowToken Address of the borrow token
+     * @param collateralAmount Amount of collateral the user will provide
+     * @param desiredLeverage Desired leverage multiplier with 4 decimals (e.g., 30000 = 3x)
+     * @return flashLoanAmount The amount to flash loan (in collateral token units)
+     * @return borrowAmount The amount to borrow from Aave (in borrow token units)
+     * @return strataxFee The Stratax protocol fee amount
+     */
+    function calculateInitOpenParams(
+        address collateralToken,
+        address borrowToken,
+        uint256 collateralAmount,
+        uint256 desiredLeverage
+    ) public view returns (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFee) {
+        require(collateralAmount > 0, "Collateral must be > 0");
+        require(desiredLeverage >= StrataxCalculations.LEVERAGE_PRECISION, "Leverage must be >= 1x");
+
+        // Validate tokens
+        _validateTokens(collateralToken, borrowToken);
+
+        // Get token decimals
+        uint256 collateralTokenDecimals = IERC20Metadata(collateralToken).decimals();
+        uint256 borrowTokenDecimals = IERC20Metadata(borrowToken).decimals();
+
+        // Get LTV from Aave
+        (, uint256 ltv,,,,,,,,) = IProtocolDataProvider(aaveDataProvider).getReserveConfigurationData(collateralToken);
+        require(ltv > 0, "Asset not usable as collateral");
+
+        // Get prices from oracle
+        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
+        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
+        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
+        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
+
+        // Prepare calculation parameters
+        StrataxCalculations.CalcParams memory calcParams = StrataxCalculations.CalcParams({
+            desiredLeverage: desiredLeverage,
+            collateralAmount: collateralAmount,
+            collateralTokenPrice: collateralTokenPrice,
+            borrowTokenPrice: borrowTokenPrice,
+            collateralTokenDecimals: collateralTokenDecimals,
+            borrowTokenDecimals: borrowTokenDecimals,
+            ltv: ltv,
+            borrowSafetyMargin: defaultBorrowSafetyMargin,
+            flashLoanFeeBps: flashLoanFeeBps,
+            strataxFeeBps: IFeeCollector(feeCollector).strataxFee(),
+            maxLeverageOffset: defaultMaxLeverageOffset
+        });
+
+        // Use the library to calculate
+        StrataxCalculations.CalcResult memory result = StrataxCalculations.calculateOpenParams(calcParams);
+
+        return (result.flashLoanAmount, result.borrowAmount, result.strataxFee);
+    }
+
+    /**
+     * @notice Updates the cached Aave flash loan fee from the Aave pool
+     * @dev Can be called by anyone to sync the cached fee with the current Aave pool fee
+     */
+    function updateAaveFlashLoanBps() external {
+        uint256 newFlashLoanFeeBps = IPool(aavePool).FLASHLOAN_PREMIUM_TOTAL();
+        require(newFlashLoanFeeBps < StrataxCalculations.FLASHLOAN_FEE_PREC, "Invalid flash loan fee");
+        if (newFlashLoanFeeBps != flashLoanFeeBps) {
+            uint256 oldFlashLoanFeeBps = flashLoanFeeBps;
+            flashLoanFeeBps = newFlashLoanFeeBps;
+            emit AaveFlashLoanFeeUpdated(newFlashLoanFeeBps, oldFlashLoanFeeBps);
+        }
+    }
+
+    /**
+     * @notice Mints a new position NFT and deploys a dedicated Stratax proxy contract using CREATE2
+     * @dev Deploys a new BeaconProxy for each position using CREATE2 for deterministic addresses
      * @param to Address to mint the tokens to
      * @param collateralToken Address of the collateral token
      * @param borrowToken Address of the borrowed token
+     * @param _openInitPosition Whether to immediately open a leveraged position upon minting
+     * @param _initParams Initial position parameters (flash loan amount, collateral, borrow amount, swap data)
      * @return tokenId The ID of the newly created position type
      * @return strataxProxy Address of the deployed Stratax proxy contract
      */
-    function mintPositionNft(address to, address collateralToken, address borrowToken)
-        external
-        returns (uint256 tokenId, address strataxProxy)
-    {
+    function mintPositionNft(
+        address to,
+        address collateralToken,
+        address borrowToken,
+        bool _openInitPosition,
+        InitPositionParams memory _initParams
+    ) external returns (uint256 tokenId, address strataxProxy) {
         require(to != address(0), "Cannot mint to zero address");
 
-        tokenId = _nextTokenId++;
+        _validateTokens(collateralToken, borrowToken);
+
+        tokenId = currentTokenId++;
 
         // Prepare initialization parameters
         Stratax.StrataxInitParams memory initParams = Stratax.StrataxInitParams({
@@ -191,15 +318,20 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
             borrowToken: borrowToken,
             strataxOracle: strataxOracle,
             feeCollector: feeCollector,
-            borrowSafetyMargin: defaultBorrowSafetyMargin
+            borrowSafetyMargin: defaultBorrowSafetyMargin,
+            maxLeverageOffset: defaultMaxLeverageOffset
         });
 
-        // Deploy a new Stratax proxy contract for this position
+        // Deploy a new Stratax proxy contract for this position using CREATE2
         bytes memory initData = abi.encodeWithSignature(
-            "initialize((address,address,address,address,uint256,address,address,address,address,uint256))", initParams
+            "initialize((address,address,address,address,uint256,address,address,address,address,uint256,uint256))",
+            initParams
         );
 
-        strataxProxy = address(new BeaconProxy(strataxBeacon, initData));
+        // Calculate salt from msg.sender and tokenId for deterministic address
+        bytes32 salt = keccak256(abi.encodePacked(msg.sender, tokenId));
+
+        strataxProxy = _deployBeaconProxyWithCreate2(strataxBeacon, initData, salt);
 
         // Create position data
         positions[tokenId] = Position({
@@ -211,12 +343,70 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
             isActive: true
         });
 
-        // Mint the NFT
-        _safeMint(to, tokenId);
+        if (_openInitPosition) {
+            // Mint the NFT
+            _safeMint(address(this), tokenId);
+            IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), _initParams.collateralAmount);
+            IERC20(collateralToken).forceApprove(strataxProxy, _initParams.collateralAmount);
+            Stratax(strataxProxy)
+                .createLeveragedPosition(
+                    _initParams.flashLoanAmount,
+                    _initParams.collateralAmount,
+                    _initParams.borrowAmount,
+                    _initParams.oneInchSwapData,
+                    _initParams.minReturnAmount
+                );
+
+            // transfer the NFT to the user after opening the position
+            _safeTransfer(address(this), to, tokenId, "");
+        } else {
+            // Just mint the NFT to the user, they can call createLeveragedPosition separately when ready
+            _safeMint(to, tokenId);
+        }
+
+        //@dev possible reentrancy here
 
         emit PositionMinted(tokenId, to, strataxProxy, collateralToken, borrowToken);
 
         return (tokenId, strataxProxy);
+    }
+
+    /**
+     * @notice Predicts the address of a Stratax proxy with full parameters
+     * @dev More accurate prediction including collateral and borrow tokens
+     * @param minter The address that will call mintPositionNft
+     * @param tokenId The token ID that will be used
+     * @param collateralToken The collateral token address
+     * @param borrowToken The borrow token address
+     * @return predictedAddress The predicted address of the Stratax proxy
+     */
+    function predictStrataxProxyAddress(address minter, uint256 tokenId, address collateralToken, address borrowToken)
+        public
+        view
+        returns (address predictedAddress)
+    {
+        Stratax.StrataxInitParams memory initParams = Stratax.StrataxInitParams({
+            aavePool: aavePool,
+            aaveDataProvider: aaveDataProvider,
+            oneInchRouter: oneInchRouter,
+            strataxPositionNft: address(this),
+            tokenId: tokenId,
+            collateralToken: collateralToken,
+            borrowToken: borrowToken,
+            strataxOracle: strataxOracle,
+            feeCollector: feeCollector,
+            borrowSafetyMargin: defaultBorrowSafetyMargin,
+            maxLeverageOffset: defaultMaxLeverageOffset
+        });
+
+        bytes memory initData = abi.encodeWithSignature(
+            "initialize((address,address,address,address,uint256,address,address,address,address,uint256,uint256))",
+            initParams
+        );
+
+        bytes32 salt = keccak256(abi.encodePacked(minter, tokenId));
+
+        return _predictCreate2Address(strataxBeacon, initData, salt);
     }
 
     /**
@@ -246,13 +436,58 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     }
 
     /**
-     * @notice Sets the default safety margin to deploy contracts with
-     * @dev Can only be called by the contract owner
-     * @param _borrowSafetyMargin The new safety margin < 10_0000
+     * @notice Sets the default borrow safety margin for newly deployed Stratax contracts
+     * @dev Can only be called by the contract owner. Must be less than BORROW_SAFETY_PRECISION (10000)
+     * @param _borrowSafetyMargin The new default safety margin with 4 decimals (e.g., 9950 = 99.5%)
      */
     function setDefaultBorrowSafetyMargin(uint256 _borrowSafetyMargin) public onlyOwner {
-        require(_borrowSafetyMargin < BORROW_SAFETY_PRECISION, "Invlaid borrowSafetMargin");
+        require(_borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invlaid borrowSafetMargin");
         defaultBorrowSafetyMargin = _borrowSafetyMargin;
+    }
+
+    /**
+     * @notice Deploys a BeaconProxy using CREATE2 for deterministic address
+     * @param beacon The beacon address for the proxy
+     * @param data The initialization data for the proxy
+     * @param salt The salt for CREATE2 deployment
+     * @return proxy The address of the deployed proxy
+     */
+    function _deployBeaconProxyWithCreate2(address beacon, bytes memory data, bytes32 salt)
+        internal
+        returns (address proxy)
+    {
+        // Get the creation code for BeaconProxy with constructor arguments
+        bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, data));
+
+        assembly {
+            proxy := create2(
+                0, // no value sent
+                add(bytecode, 0x20), // bytecode starts after length prefix
+                mload(bytecode), // bytecode length
+                salt // salt for deterministic address
+            )
+        }
+
+        require(proxy != address(0), "BeaconProxy deployment failed");
+    }
+
+    /**
+     * @notice Predicts the CREATE2 address for a BeaconProxy deployment
+     * @param beacon The beacon address for the proxy
+     * @param data The initialization data for the proxy
+     * @param salt The salt for CREATE2 deployment
+     * @return predicted The predicted address
+     */
+    function _predictCreate2Address(address beacon, bytes memory data, bytes32 salt)
+        internal
+        view
+        returns (address predicted)
+    {
+        bytes memory bytecode = abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(beacon, data));
+
+        bytes32 hash = keccak256(abi.encodePacked(bytes1(0xff), address(this), salt, keccak256(bytecode)));
+
+        return address(uint160(uint256(hash)));
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -304,11 +539,37 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     }
 
     /**
+     * @notice Returns a limited number of positions owned by an address for pagination
+     * @param owner The address to query
+     * @param amountofPositions The maximum number of positions to return (starting from index 0)
+     * @return tokenIds Array of token IDs owned by the address
+     * @return positionList Array of position structs
+     */
+    function getPositionsByOwner(address owner, uint256 amountofPositions)
+        public
+        view
+        returns (uint256[] memory tokenIds, Position[] memory positionList)
+    {
+        uint256 balance = balanceOf(owner);
+        uint256 returnAmount = amountofPositions > balance ? balance : amountofPositions;
+        tokenIds = new uint256[](returnAmount);
+        positionList = new Position[](returnAmount);
+
+        for (uint256 i = 0; i < returnAmount; i++) {
+            uint256 tokenId = tokenOfOwnerByIndex(owner, i);
+            tokenIds[i] = tokenId;
+            positionList[i] = positions[tokenId];
+        }
+
+        return (tokenIds, positionList);
+    }
+
+    /**
      * @notice Returns the total number of position types ever created
      * @return count The total count of position types
      */
     function getTotalPositionsCreated() public view returns (uint256 count) {
-        return _nextTokenId - 1;
+        return currentTokenId - 1;
     }
 
     /**
@@ -323,6 +584,46 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
     /*//////////////////////////////////////////////////////////////
                         INTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Validates that a token is a valid Aave collateral asset
+     * @param token The token address to validate
+     * @return isValid True if the token can be used as collateral
+     */
+    function _isValidCollateralToken(address token) internal view returns (bool isValid) {
+        (, uint256 ltv,,,, bool usageAsCollateralEnabled,,, bool isActive, bool isFrozen) =
+            IProtocolDataProvider(aaveDataProvider).getReserveConfigurationData(token);
+
+        // Token must be active, not frozen, have collateral enabled, and have non-zero LTV
+        return isActive && !isFrozen && usageAsCollateralEnabled && ltv > 0;
+    }
+
+    /**
+     * @notice Validates that a token is a valid Aave borrow asset
+     * @param token The token address to validate
+     * @return isValid True if the token can be borrowed
+     */
+    function _isValidBorrowToken(address token) internal view returns (bool isValid) {
+        (,,,,,, bool borrowingEnabled,, bool isActive, bool isFrozen) =
+            IProtocolDataProvider(aaveDataProvider).getReserveConfigurationData(token);
+
+        // Token must be active, not frozen, and have borrowing enabled
+        return isActive && !isFrozen && borrowingEnabled;
+    }
+
+    /**
+     * @notice Validates both collateral and borrow tokens for a position
+     * @param collateralToken The collateral token address
+     * @param borrowToken The borrow token address
+     */
+    function _validateTokens(address collateralToken, address borrowToken) internal view {
+        require(collateralToken != address(0), "Invalid collateral token address");
+        require(borrowToken != address(0), "Invalid borrow token address");
+        require(collateralToken != borrowToken, "Collateral and borrow tokens must be different");
+
+        require(_isValidCollateralToken(collateralToken), "Collateral token not supported by Aave");
+        require(_isValidBorrowToken(borrowToken), "Borrow token not supported by Aave");
+    }
 
     /**
      * @notice Returns the base URI for computing tokenURI
@@ -364,6 +665,43 @@ contract StrataxPositionNft is Initializable, ERC721Upgradeable, ERC721Enumerabl
         override(ERC721Upgradeable, ERC721EnumerableUpgradeable)
         returns (bool)
     {
-        return super.supportsInterface(interfaceId);
+        return interfaceId == type(IERC721Receiver).interfaceId || super.supportsInterface(interfaceId);
     }
+
+    /**
+     * @notice Handle the receipt of an NFT
+     * @dev The ERC721 smart contract calls this function on the recipient
+     * after a `safeTransfer`. This function MUST return the function selector,
+     * otherwise the caller will revert the transaction.
+     * @param operator The address which called `safeTransferFrom` function
+     * @param from The address which previously owned the token
+     * @param tokenId The NFT identifier which is being transferred
+     * @param data Additional data with no specified format
+     * @return bytes4 `bytes4(keccak256("onERC721Received(address,address,uint256,bytes)"))`
+     */
+    function onERC721Received(address operator, address from, uint256 tokenId, bytes calldata data)
+        external
+        pure
+        override
+        returns (bytes4)
+    {
+        return this.onERC721Received.selector;
+    }
+
+    /**
+     * @notice Validates if a token pair is valid for creating a position
+     * @param _collateralToken The collateral token address to validate
+     * @param _borrowToken The borrow token address to validate
+     * @return True if both tokens are valid for their respective roles
+     */
+    function isTokenPairValid(address _collateralToken, address _borrowToken) public view returns (bool) {
+        return _isValidCollateralToken(_collateralToken) && _isValidBorrowToken(_borrowToken);
+    }
+
+    /**
+     * @notice Authorizes contract upgrades
+     * @dev Required by UUPSUpgradeable - only allows owner to upgrade
+     * @param newImplementation The address of the new implementation contract
+     */
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }

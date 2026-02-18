@@ -2,23 +2,35 @@
 pragma solidity ^0.8.13;
 
 import {AggregatorV3Interface} from "./interfaces/external/AggregatorV3Interface.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
+import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 
-contract StrataxOracle {
-    address public owner;
-
+contract StrataxOracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     // Mapping from token address to Chainlink price feed address
     mapping(address => address) public priceFeeds;
 
-    event PriceFeedUpdated(address indexed token, address indexed priceFeed);
-    event OwnershipTransferred(address indexed previousOwner, address indexed newOwner);
+    /// @notice Maximum age of price data in seconds
+    uint256 public maxPriceAge;
 
-    modifier onlyOwner() {
-        require(msg.sender == owner, "Not owner");
-        _;
+    /// @notice Emitted when a price feed is updated for a token
+    event PriceFeedUpdated(address indexed token, address indexed priceFeed);
+
+    /// @notice Emitted when the maximum price age is updated
+    event MaxPriceAgeUpdated(uint256 maxPriceAge);
+
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
     }
 
-    constructor() {
-        owner = msg.sender;
+    /**
+     * @notice Initializes the contract (replaces constructor)
+     * @param _owner The address of the contract owner
+     */
+    function initialize(address _owner) public initializer {
+        __Ownable_init(_owner);
+        maxPriceAge = 36000; // Default to 1 hour
     }
 
     /**
@@ -46,6 +58,15 @@ contract StrataxOracle {
     }
 
     /**
+     * @notice Sets the maximum age for price data
+     * @param _maxPriceAge The maximum age in seconds (e.g., 3600 for 1 hour)
+     */
+    function setMaxPriceAge(uint256 _maxPriceAge) external onlyOwner {
+        maxPriceAge = _maxPriceAge;
+        emit MaxPriceAgeUpdated(_maxPriceAge);
+    }
+
+    /**
      * @notice internal function for setting the price feed address
      * @param _token token address
      * @param _priceFeed chainlink price feed address
@@ -59,23 +80,22 @@ contract StrataxOracle {
 
         priceFeeds[_token] = _priceFeed;
     }
-    /**
-     * @notice Gets the latest price for a token from Chainlink
-     * @param _token The token address
-     * @return price which is has 8 decimals of precision
-     * @dev Chainlink price feeds that do not have 8 decimals are not supported
-     */
 
-    function getPrice(address _token) public view returns (uint256 price) {
+    function getPrice(address _token) public returns (uint256 price) {
         address priceFeedAddress = priceFeeds[_token];
         require(priceFeedAddress != address(0), "Price feed not set for token");
 
         AggregatorV3Interface priceFeed = AggregatorV3Interface(priceFeedAddress);
 
-        (, int256 answer,,,) = priceFeed.latestRoundData();
-        require(answer > 0, "Invalid price from oracle");
+        (uint80 roundId, int256 answer,/* startedAt */, uint256 updatedAt, uint80 answeredInRound) =
+            priceFeed.latestRoundData();
 
-        // forge-lint: disable-next-line(unsafe-typecast)
+        require(answer > 0, "Invalid price from oracle");
+        require(updatedAt > 0, "Round not complete");
+        require(answeredInRound >= roundId, "Stale price");
+
+        //require(block.timestamp - updatedAt <= maxPriceAge, "Price too old"); // e.g., 3600 seconds
+
         price = uint256(answer);
     }
 
@@ -114,13 +134,8 @@ contract StrataxOracle {
     }
 
     /**
-     * @notice Transfers ownership of the contract
-     * @param _newOwner The address of the new owner
+     * @notice Required by UUPSUpgradeable - authorizes upgrades
+     * @param newImplementation The address of the new implementation
      */
-    function transferOwnership(address _newOwner) external onlyOwner {
-        require(_newOwner != address(0), "Invalid address");
-        address previousOwner = owner;
-        owner = _newOwner;
-        emit OwnershipTransferred(previousOwner, _newOwner);
-    }
+    function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 }

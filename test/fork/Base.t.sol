@@ -2,7 +2,6 @@
 pragma solidity ^0.8.13;
 
 import {Test, console} from "forge-std/Test.sol";
-//import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Stratax} from "../../src/Stratax.sol";
 import {StrataxPositionNft} from "../../src/StrataxPositionNft.sol";
 import {StrataxOracle} from "../../src/StrataxOracle.sol";
@@ -10,35 +9,44 @@ import {FeeCollector} from "../../src/FeeCollector.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
-import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {ProxyAdmin} from "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 import {Vm} from "forge-std/Vm.sol";
 
 /**
  * @title StrataxForkTestBase
  * @notice Base contract for Stratax fork tests containing shared setup and utilities
  * @dev Inherit from this contract in fork test files
+ * @dev Uses the same deployment pattern as DeployStrataxSystem.s.sol:
+ *      - StrataxOracle as UUPS (ERC1967Proxy)
+ *      - FeeCollector as UUPS (ERC1967Proxy)
+ *      - StrataxPositionNft as UUPS (ERC1967Proxy)
+ *      - Stratax with UpgradeableBeacon pattern
  */
 abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
     //////////////////////////////////////////////////////////////*/
 
+    // Default configuration values (matching deployment script)
+    uint256 public constant DEFAULT_STRATAX_FEE = 5; // 0.05% (5/10000)
+    string public constant DEFAULT_NFT_URI = "https://api.stratax.io/nft/metadata/";
+
     Stratax public stratax;
     Stratax public strataxImplementation;
     UpgradeableBeacon public strataxBeacon;
     StrataxPositionNft public strataxPositionNft;
     StrataxPositionNft public strataxPositionNftImplementation;
-    TransparentUpgradeableProxy public nftProxy;
-    ProxyAdmin public proxyAdmin;
+    ERC1967Proxy public strataxPositionNftProxy;
     StrataxOracle public strataxOracle;
+    StrataxOracle public strataxOracleImplementation;
+    ERC1967Proxy public strataxOracleProxy;
     FeeCollector public feeCollector;
     FeeCollector public feeCollectorImplementation;
-    TransparentUpgradeableProxy public feeCollectorProxy;
-    address public ownerTrader;
-    uint256 public tokenId;
-    address public admin;
+    ERC1967Proxy public feeCollectorProxy;
 
+    address public ownerTrader;
+    address public admin;
+    uint256 public tokenId;
     uint256 public SAVED_DATA_BLOCK;
 
     bool hasApiKey;
@@ -87,34 +95,90 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
         ownerTrader = address(0x123);
         admin = makeAddr("admin");
 
-        // Deploy ProxyAdmin first (needed for all proxies)
-        proxyAdmin = new ProxyAdmin(address(this));
+        // Deploy all contracts using the same pattern as DeployStrataxSystem.s.sol
+        deployStrataxOracle(admin);
+        deployFeeCollector(admin);
+        deployStrataxBeacon(admin);
+        deployStrataxPositionNft(admin);
 
-        strataxOracle = new StrataxOracle();
-        strataxOracle.setPriceFeed(USDC, USDC_PRICE_FEED);
-        strataxOracle.setPriceFeed(WETH, WETH_PRICE_FEED);
+        // Mint position NFT which deploys Stratax proxy
+        StrataxPositionNft.InitPositionParams memory emptyParams;
+        (uint256 _tokenId, address strataxProxy) =
+            strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams);
+        tokenId = _tokenId;
+        stratax = Stratax(strataxProxy);
+    }
 
-        // Deploy FeeCollector implementation and proxy
+    /*//////////////////////////////////////////////////////////////
+                        DEPLOYMENT FUNCTIONS
+    //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Deploys StrataxOracle as a UUPS proxy
+     * @param owner The address that will own the contract
+     */
+    function deployStrataxOracle(address owner) internal {
+        // Deploy implementation
+        strataxOracleImplementation = new StrataxOracle();
+
+        // Encode initialize call
+        bytes memory initData = abi.encodeWithSelector(StrataxOracle.initialize.selector, owner);
+
+        // Deploy UUPS proxy
+        strataxOracleProxy = new ERC1967Proxy(address(strataxOracleImplementation), initData);
+        strataxOracle = StrataxOracle(address(strataxOracleProxy));
+
+        // Setup initial price feeds
+        address[] memory tokens = new address[](2);
+        tokens[0] = USDC;
+        tokens[1] = WETH;
+
+        address[] memory priceFeeds = new address[](2);
+        priceFeeds[0] = USDC_PRICE_FEED;
+        priceFeeds[1] = WETH_PRICE_FEED;
+
+        vm.prank(owner);
+        strataxOracle.setPriceFeeds(tokens, priceFeeds);
+    }
+
+    /**
+     * @notice Deploys FeeCollector as a UUPS proxy
+     * @param owner The address that will own the contract
+     */
+    function deployFeeCollector(address owner) internal {
+        // Deploy implementation
         feeCollectorImplementation = new FeeCollector();
-        bytes memory feeCollectorInitData = abi.encodeWithSelector(
-            FeeCollector.initialize.selector,
-            admin, // owner
-            5 // strataxFee in basis points (0.05%)
-        );
-        feeCollectorProxy = new TransparentUpgradeableProxy(
-            address(feeCollectorImplementation), address(proxyAdmin), feeCollectorInitData
-        );
+
+        // Encode initialize call
+        bytes memory initData = abi.encodeWithSelector(FeeCollector.initialize.selector, owner, DEFAULT_STRATAX_FEE);
+
+        // Deploy UUPS proxy
+        feeCollectorProxy = new ERC1967Proxy(address(feeCollectorImplementation), initData);
         feeCollector = FeeCollector(address(feeCollectorProxy));
+    }
 
-        // Deploy Stratax implementation and beacon
+    /**
+     * @notice Deploys Stratax implementation and Beacon
+     * @param owner The address that will own the beacon
+     */
+    function deployStrataxBeacon(address owner) internal {
+        // Deploy implementation
         strataxImplementation = new Stratax();
-        strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), address(this));
 
-        // Deploy StrataxPositionNft implementation
+        // Deploy beacon
+        strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), owner);
+    }
+
+    /**
+     * @notice Deploys StrataxPositionNft as a UUPS proxy
+     * @param owner The address that will own the contract
+     */
+    function deployStrataxPositionNft(address owner) internal {
+        // Deploy implementation
         strataxPositionNftImplementation = new StrataxPositionNft();
 
-        // Initialize StrataxPositionNft via TransparentUpgradeableProxy
-        StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
+        // Create initialization params
+        StrataxPositionNft.StrataxPositionNftInitParams memory initParams =
             StrataxPositionNft.StrataxPositionNftInitParams({
                 strataxBeacon: address(strataxBeacon),
                 aavePool: AAVE_POOL,
@@ -122,20 +186,16 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
                 oneInchRouter: INCH_ROUTER,
                 strataxOracle: address(strataxOracle),
                 feeCollector: address(feeCollector),
-                owner: address(this),
-                uri: "https://stratax.io/nft/"
+                owner: owner,
+                uri: DEFAULT_NFT_URI
             });
 
-        bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        nftProxy = new TransparentUpgradeableProxy(
-            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
-        );
-        strataxPositionNft = StrataxPositionNft(address(nftProxy));
+        // Encode initialize call
+        bytes memory initData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, initParams);
 
-        // Mint position NFT which deploys Stratax proxy
-        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH);
-        tokenId = _tokenId;
-        stratax = Stratax(strataxProxy);
+        // Deploy UUPS proxy
+        strataxPositionNftProxy = new ERC1967Proxy(address(strataxPositionNftImplementation), initData);
+        strataxPositionNft = StrataxPositionNft(address(strataxPositionNftProxy));
     }
 
     /*//////////////////////////////////////////////////////////////

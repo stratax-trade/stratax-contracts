@@ -59,7 +59,9 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         strataxPositionNft = StrataxPositionNft(address(nftProxy));
 
         // Mint position NFT which deploys Stratax proxy
-        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH);
+        StrataxPositionNft.InitPositionParams memory emptyParams;
+        (uint256 _tokenId, address strataxProxy) =
+            strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams);
         tokenId = _tokenId;
         stratax = Stratax(strataxProxy);
     }

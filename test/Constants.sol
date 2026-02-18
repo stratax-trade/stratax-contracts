@@ -11,6 +11,9 @@ contract ConstantsEtMainnet {
     // Chainlink price feeds
     address public constant USDC_PRICE_FEED = 0x8fFfFfd4AfB6115b954Bd326cbe7B4BA576818f6;
     address public constant WETH_PRICE_FEED = 0x5f4eC3Df9cbd43714FE2740f5E3616155c5b8419;
+
+    //AAVE_AUSDC <-- used for testing purposes
+    address public constant AAVE_AUSDC = 0x98C23E9d8f34FEFb1B7BD6a91B7FF122F4e16F5c;
 }
 
 contract PolygonMainnet {
