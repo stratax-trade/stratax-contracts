@@ -72,7 +72,7 @@ if [ -f "docs/SUMMARY.md" ]; then
         fi
     done < "docs/SUMMARY.md"
 fi
-
+git remote add org git@github.com:stratax-trade/stratax-contracts.git
 # Count markdown files
 md_count=$(find docs -name "*.md" | wc -l)
 echo ""
