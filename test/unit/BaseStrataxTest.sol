@@ -58,11 +58,15 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         // Setup basic mocks
         setupBasicMocks();
 
-        // Deploy all contracts
+        // Deploy all contracts in dependency order
         deployStrataxOracle(admin);
-        deployFeeCollector(admin);
         deployStrataxBeacon(admin);
+        deployFeeCollector(admin, address(0)); // Pass address(0) for now, will be set when NFT is deployed
         deployStrataxPositionNft(admin);
+
+        // Update FeeCollector with actual StrataxPositionNft address
+        vm.prank(admin);
+        feeCollector.setStrataxPositionNft(address(strataxPositionNft));
 
         // Setup Aave configuration mocks
         setupAaveConfigMocks();
@@ -188,13 +192,16 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
     /**
      * @notice Deploys FeeCollector as a UUPS proxy
      * @param owner The address that will own the contract
+     * @param strataxPositionNftAddress The StrataxPositionNft address (can be address(0) initially)
      */
-    function deployFeeCollector(address owner) internal {
+    function deployFeeCollector(address owner, address strataxPositionNftAddress) internal {
         // Deploy implementation
         feeCollectorImplementation = new FeeCollector();
 
-        // Encode initialize call
-        bytes memory initData = abi.encodeWithSelector(FeeCollector.initialize.selector, owner, DEFAULT_STRATAX_FEE);
+        // Encode initialize call with strataxPositionNft parameter
+        bytes memory initData = abi.encodeWithSelector(
+            FeeCollector.initialize.selector, strataxPositionNftAddress, owner, DEFAULT_STRATAX_FEE
+        );
 
         // Deploy UUPS proxy
         feeCollectorProxy = new ERC1967Proxy(address(feeCollectorImplementation), initData);
@@ -271,6 +278,11 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         // Encode initialize call
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
 
+        // Update fee collector with this NFT contract if it's not the same as the main one
+        if (customFeeCollector != address(feeCollector)) {
+            vm.prank(owner);
+            FeeCollector(customFeeCollector).setStrataxPositionNft(address(testNft));
+        }
         // Deploy UUPS proxy
         ERC1967Proxy testProxy = new ERC1967Proxy(address(testImplementation), nftInitData);
         testNft = StrataxPositionNft(address(testProxy));

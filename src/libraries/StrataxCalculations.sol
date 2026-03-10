@@ -21,6 +21,9 @@ library StrataxCalculations {
     /// @notice Precision for loan-to-value ratios (4 decimals, e.g., 8000 = 80%)
     uint256 public constant LTV_PRECISION = 1e4;
 
+    /// @notice Precision for basis points (4 decimals, e.g., 10000 = 100%)
+    uint256 public constant BPS = 1e4; // Basis points precision (100% = 10000)
+
     /// @notice Precision for leverage calculations (4 decimals, e.g., 30000 = 3x)
     uint256 public constant LEVERAGE_PRECISION = 1e4;
 

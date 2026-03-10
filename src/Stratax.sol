@@ -133,8 +133,17 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
     /// @notice Aave variable debt interest rate mode identifier
     uint256 public constant VARIABLE_DEBT = 2;
 
+    /// @notice Default unwind slippage buffer in basis points (50 = 0.50%)
+    uint256 public constant DEFAULT_SLIPPAGE_BPS = 50;
+
     /// @notice tokenId which represents this contract in the StrataxPositionNft
     uint256 public tokenId;
+
+    /// @notice if the token has been burned
+    bool public isBurned;
+
+    /// @notice owner of the the burned token
+    address public burnedTokenOwner;
 
     /// @notice Safety margin for borrow calculations (9900 = 99% of max LTV)
     /// @dev This ensures positions have a healthy buffer and don't immediately risk liquidation
@@ -283,13 +292,22 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
     /// @param user Address of the user whose position was closed
     event PositionClosed(address indexed user);
 
+    /// @notice Emitted when a position is burned
+    /// @param user Address of the user whose position was burned
+    /// @param tokenId The ID of the burned position
+    event PositionBurned(address indexed user, uint256 tokenId);
+
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Restricts function access to contract owner only
     modifier onlyOwner() {
-        require(msg.sender == strataxPositionNft.ownerOf(tokenId), "Not Owner");
+        if (isBurned) {
+            require(msg.sender == burnedTokenOwner, "Not Owner");
+        } else {
+            require(msg.sender == strataxPositionNft.ownerOf(tokenId), "Not Owner");
+        }
         _;
     }
 
@@ -343,6 +361,7 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
      */
     function calculateOpenParams(CalcOpenParams memory _params)
         public
+        view
         returns (uint256 flashLoanAmount, uint256 borrowAmount)
     {
         // Get LTV from Aave for the collateral token
@@ -381,19 +400,34 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
 
         StrataxCalculations.CalcResult memory result = StrataxCalculations.calculateOpenParams(calcParams);
 
-
         return (result.flashLoanAmount, result.borrowAmount);
     }
 
     /**
      * @notice Calculates the amount of collateral to withdraw and debt to repay for unwinding a position
      * @param _debtToRepay the amount of debt to repay on the position reducing the position size
+     * @return collateralToWithdraw The amount of collateral to withdraw from Aave (includes default slippage buffer)
+     * @return debtAmount The total debt amount to repay
+     * @return strataxFee The Stratax protocol fee amount
+     */
+    function calculateUnwindParams(uint256 _debtToRepay)
+        public
+        view
+        returns (uint256 collateralToWithdraw, uint256 debtAmount, uint256 strataxFee)
+    {
+        return calculateUnwindParams(_debtToRepay, DEFAULT_SLIPPAGE_BPS);
+    }
+
+    /**
+     * @notice Calculates the amount of collateral to withdraw and debt to repay for unwinding a position
+     * @param _debtToRepay the amount of debt to repay on the position reducing the position size
+     * @param _slippageBufferBps Slippage buffer in basis points
      * @return collateralToWithdraw The amount of collateral to withdraw from Aave (includes slippage buffer)
      * @return debtAmount The total debt amount to repay
      * @return strataxFee The Stratax protocol fee amount
      * @dev if the _debtTeRepay is equal to or more than the actual debt, the position will be fully closed
      */
-    function calculateUnwindParams(uint256 _debtToRepay)
+    function calculateUnwindParams(uint256 _debtToRepay, uint256 _slippageBufferBps)
         public
         view
         returns (uint256 collateralToWithdraw, uint256 debtAmount, uint256 strataxFee)
@@ -409,11 +443,14 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
         uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
         strataxFee = (_debtToRepay * IFeeCollector(feeCollector).strataxFee()) / StrataxCalculations.FLASHLOAN_FEE_PREC;
         uint256 flashLoanFeeAmount = (_debtToRepay * flashLoanFeeBps) / StrataxCalculations.FLASHLOAN_FEE_PREC;
-        collateralToWithdraw = (debtTokenPrice * (_debtToRepay + flashLoanFeeAmount) * 10 ** collateralTokenDecimals)
-            / (collateralTokenPrice * 10 ** borrowTokenDecimals);
+        // Include protocol fee in required unwind amount so fee collection can be funded from swap proceeds.
+        collateralToWithdraw =
+            (debtTokenPrice * (_debtToRepay + flashLoanFeeAmount + strataxFee) * 10 ** collateralTokenDecimals)
+                / (collateralTokenPrice * 10 ** borrowTokenDecimals);
 
-        // Account for 5% slippage in swap, we will re-supply the excess amount to aave
-        collateralToWithdraw = (collateralToWithdraw * 1050) / 1000; // There should Always be enough collateral to unwind a position
+        // Account for slippage in swap, we will re-supply the excess amount to aave
+        collateralToWithdraw =
+            (collateralToWithdraw * (StrataxCalculations.BPS + _slippageBufferBps)) / StrataxCalculations.BPS; // There should Always be enough collateral to unwind a position
 
         return (collateralToWithdraw, _debtToRepay, strataxFee);
     }
@@ -442,6 +479,8 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
         bytes calldata _oneInchSwapData,
         uint256 _minReturnAmount
     ) public onlyOwner {
+        require(!isBurned, "Position is burned, only unwinding allowed");
+
         uint256 currentCollateralBalance = IERC20(collateralToken).balanceOf(address(this));
         if (currentCollateralBalance > 0) {
             //supply any inactive collateral
@@ -608,7 +647,9 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
 
         uint256 collateralBackingDebt = ((debtTokenAmount) * _borrowTokenPrice * (10 ** collateralTokenDecimals))
             / (_collateralTokenPrice * (10 ** borrowTokenDecimals));
-        collateralBackingDebt = (collateralBackingDebt * _ltv) / StrataxCalculations.LTV_PRECISION;
+        require(_ltv > 0, "Invalid LTV");
+        // Required collateral to back debt at the given LTV (rounded up for safety).
+        collateralBackingDebt = (collateralBackingDebt * StrataxCalculations.LTV_PRECISION + _ltv - 1) / _ltv;
 
         //determine the free collateral to be considered
         if ((aTokenBalance) >= collateralBackingDebt) {
@@ -655,7 +696,11 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
             strataxFeeAmount = (_amount * IFeeCollector(feeCollector).strataxFee() * desiredLev)
                 / (StrataxCalculations.FLASHLOAN_FEE_PREC * StrataxCalculations.LEVERAGE_PRECISION);
             IERC20(_asset).forceApprove(feeCollector, strataxFeeAmount);
-            IFeeCollector(feeCollector).collectFees(_asset, strataxFeeAmount);
+
+            uint256 borrowAmountInUsd = (flashParams.borrowAmount * borrowTokenPrice) / (10 ** borrowTokenDecimals);
+
+            IFeeCollector(feeCollector)
+                .collectFeesAndRecordVolume(_asset, strataxFeeAmount, borrowToken, borrowAmountInUsd);
         }
 
         // Step 1: Supply collateral to Aave and subtract the fee from collateral
@@ -671,8 +716,12 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
             (,,,,, uint256 health) = aavePool.getUserAccountData(address(this));
 
             IERC20(flashParams.borrowToken).forceApprove(address(oneInchRouter), flashParams.borrowAmount);
-            uint256 returnAmt =
-                _call1InchSwap(flashParams.oneInchSwapData, flashParams.borrowToken, flashParams.minReturnAmount);
+            uint256 returnAmt = _call1InchSwap(
+                flashParams.oneInchSwapData,
+                flashParams.borrowToken,
+                flashParams.collateralToken,
+                flashParams.minReturnAmount
+            );
 
             require(
                 IERC20(flashParams.borrowToken).balanceOf(address(this)) == prevBal, "Borrow token left in contract"
@@ -781,47 +830,51 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
 
         // Step 2: Calculate and withdraw only the collateral that backed the repaid debt
         uint256 withdrawnAmount;
-        uint256 strataxFeeInCollateral;
+        uint256 strataxFeeInDebtToken;
+        uint256 debtTokenPrice;
         {
             // Get prices and decimals
-            uint256 debtTokenPrice = IStrataxOracle(strataxOracle).getPrice(_asset);
-            uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(unwindParams.collateralToken);
-            require(debtTokenPrice > 0 && collateralTokenPrice > 0, "Invalid prices");
+            debtTokenPrice = IStrataxOracle(strataxOracle).getPrice(_asset);
+            require(debtTokenPrice > 0, "Invalid prices");
 
-            //use the same logic when calculating the unwinding params
-            uint256 strataxFee =
+            // Use the same fee logic as calculateUnwindParams, but collect in debt token from swap proceeds.
+            strataxFeeInDebtToken =
                 (_amount * IFeeCollector(feeCollector).strataxFee()) / StrataxCalculations.FLASHLOAN_FEE_PREC;
-            strataxFeeInCollateral = (debtTokenPrice * (strataxFee) * 10 ** collateralTokenDecimals)
-                / (collateralTokenPrice * 10 ** borrowTokenDecimals);
-            uint256 collateralToWithdraw = (debtTokenPrice * (_amount + _premium) * 10 ** collateralTokenDecimals)
-                / (collateralTokenPrice * 10 ** borrowTokenDecimals);
 
-            //account for swap slippage and add the fee for withdrawal
-            collateralToWithdraw = (collateralToWithdraw * 1050) / 1000 + strataxFeeInCollateral; // 5% slippage
-
-            withdrawnAmount = aavePool.withdraw(unwindParams.collateralToken, collateralToWithdraw, address(this));
-            withdrawnAmount = withdrawnAmount - strataxFeeInCollateral;
+            withdrawnAmount =
+                aavePool.withdraw(unwindParams.collateralToken, unwindParams.collateralToWithdraw, address(this));
         }
 
         // Step 3: Swap collateral to debt token to repay flash loan
         IERC20(unwindParams.collateralToken).forceApprove(address(oneInchRouter), withdrawnAmount);
-        uint256 returnAmount = _call1InchSwap(unwindParams.oneInchSwapData, _asset, unwindParams.minReturnAmount);
+        uint256 returnAmount = _call1InchSwap(
+            unwindParams.oneInchSwapData, unwindParams.collateralToken, borrowToken, unwindParams.minReturnAmount
+        );
 
         //4. Pay stratax fee
-        {
-            IERC20(collateralToken).forceApprove(feeCollector, strataxFeeInCollateral);
-            IFeeCollector(feeCollector).collectFees(collateralToken, strataxFeeInCollateral);
-        }
-
         // Step 5: Repay flash loan
         uint256 totalDebt = _amount + _premium;
         require(returnAmount >= totalDebt, "Insufficient funds to repay flash loan");
 
         // Supply any leftover tokens back to Aave
         // Note: There might be other positions open, so unwinding one position will increase the health factor
-        if (returnAmount - totalDebt > 0) {
-            IERC20(_asset).forceApprove(address(aavePool), returnAmount - totalDebt);
-            aavePool.supply(_asset, returnAmount - totalDebt, address(this), 0);
+        uint256 leftoverAfterRepay = returnAmount - totalDebt;
+
+        // Collect protocol fee from debt-token proceeds so swap allowance matches swap calldata amount.
+        if (strataxFeeInDebtToken > 0) {
+            require(leftoverAfterRepay >= strataxFeeInDebtToken, "Insufficient funds for stratax fee");
+            IERC20(_asset).forceApprove(feeCollector, strataxFeeInDebtToken);
+
+            uint256 borrowAmountInUsd = (_amount * debtTokenPrice) / (10 ** borrowTokenDecimals);
+            IFeeCollector(feeCollector)
+                .collectFeesAndRecordVolume(_asset, strataxFeeInDebtToken, _asset, borrowAmountInUsd);
+
+            leftoverAfterRepay = leftoverAfterRepay - strataxFeeInDebtToken;
+        }
+
+        if (leftoverAfterRepay > 0) {
+            IERC20(_asset).forceApprove(address(aavePool), leftoverAfterRepay);
+            aavePool.supply(_asset, leftoverAfterRepay, address(this), 0);
         }
 
         // approve aave to retrive payment for the flash loan
@@ -832,33 +885,132 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
         return true;
     }
 
+    event DEBUG(uint256 value, string description);
+
     /**
-     * @notice Internal function to execute a token swap via 1inch aggregator
+     * @notice Internal function to execute a token swap via 1inch aggregator with security checks
      * @dev Performs low-level call to 1inch router with pre-encoded swap data
-     *      The swap parameters must be obtained from the 1inch API beforehand
+     *      Includes multiple security validations:
+     *      - Verifies function selector is whitelisted
+     *      - Checks source token balance decreased
+     *      - Verifies destination token balance increased
+     *      - Validates dstReceiver is this contract (for swap function)
      * @param _swapParams Encoded calldata for the 1inch swap (from 1inch API)
-     * @param _asset Address of the asset being swapped to
+     * @param _srcToken The source token being swapped from
+     * @param _dstToken The destination token being swapped to
      * @param _minReturnAmount Minimum acceptable return amount for slippage protection
      * @return returnAmount Actual amount received from the swap
      */
-    function _call1InchSwap(bytes memory _swapParams, address _asset, uint256 _minReturnAmount)
+    function _call1InchSwap(bytes memory _swapParams, address _srcToken, address _dstToken, uint256 _minReturnAmount)
         internal
         returns (uint256 returnAmount)
     {
-        // Execute the 1inch swap using low-level call with the calldata from the API
+        // 1. Verify calldata has minimum length for function selector
+        require(_swapParams.length >= 4, "Invalid swap params length");
+
+        // 2. Extract and verify function selector
+        bytes4 selector;
+        assembly {
+            selector := mload(add(_swapParams, 32))
+        }
+
+        // Common 1inch V5/V6 Router function selectors
+        bytes4 SWAP_SELECTOR = 0x12aa3caf; // swap(address executor, SwapDescription desc, bytes permit, bytes data)
+        bytes4 UNOSWAP_SELECTOR = 0x0502b1c5; // unoswap(address srcToken, uint256 amount, uint256 minReturn, uint256[] pools)
+        bytes4 UNOSWAPV3_SELECTOR = 0xbc80f1a8; // unoswapV3(uint256 amount, uint256 minReturn, uint256[] pools)
+        bytes4 UNISWAPV3_SWAP_SELECTOR = 0xe449022e; // uniswapV3Swap(uint256 amount, uint256 minReturn, uint256[] pools)
+        bytes4 CLIPPER_SWAP_SELECTOR = 0x84bd6d29; // clipperSwap(...)
+        bytes4 FILL_ORDER_RFQTO_SELECTOR = 0x5a099843; // fillOrderRFQTo(...)
+        bytes4 FILL_ORDER_RFQTO_WITH_MAKEPERMIT_SELECTOR = 0x70ccbd31; // fillOrderRFQToWithMakingAmount(...)
+        bytes4 ETHERS_SWAP_SELECTOR = 0x07ed2379; // ethersSwap(...) - 1inch V6
+        bytes4 UNISWAP_V3_SWAP_TO_SELECTOR = 0x83800a8e; // uniswapV3SwapTo(...) - 1inch V6
+
+        require(
+            selector == SWAP_SELECTOR || selector == UNOSWAP_SELECTOR || selector == UNOSWAPV3_SELECTOR
+                || selector == UNISWAPV3_SWAP_SELECTOR || selector == CLIPPER_SWAP_SELECTOR
+                || selector == FILL_ORDER_RFQTO_SELECTOR || selector == FILL_ORDER_RFQTO_WITH_MAKEPERMIT_SELECTOR
+                || selector == ETHERS_SWAP_SELECTOR || selector == UNISWAP_V3_SWAP_TO_SELECTOR,
+            "Invalid 1inch function selector"
+        );
+
+        // 3. For swap() function, decode and verify SwapDescription
+        if (selector == SWAP_SELECTOR) {
+            _verifySwapDescription(_swapParams, _srcToken, _dstToken);
+        }
+
+        // 4. Record source token balance before swap
+        uint256 srcBalanceBefore = IERC20(_srcToken).balanceOf(address(this));
+        require(srcBalanceBefore > 0, "No source token to swap");
+
+        // 5. Record destination token balance before swap
+        uint256 dstBalanceBefore = IERC20(_dstToken).balanceOf(address(this));
+
+        // 6. Execute the 1inch swap using low-level call
         (bool success, bytes memory result) = address(oneInchRouter).call(_swapParams);
         require(success, "1inch swap failed");
 
-        // Decode the return amount from the swap
-        if (result.length > 0) {
-            (returnAmount,) = abi.decode(result, (uint256, uint256));
-        } else {
-            // If no return data, check balance
-            returnAmount = IERC20(_asset).balanceOf(address(this));
+        // 7. Verify source token balance decreased (tokens were spent)
+        uint256 srcBalanceAfter = IERC20(_srcToken).balanceOf(address(this));
+        require(srcBalanceAfter < srcBalanceBefore, "Source token not spent in swap");
+
+        // 8. Verify destination token balance increased (tokens were received)
+        uint256 dstBalanceAfter = IERC20(_dstToken).balanceOf(address(this));
+        require(dstBalanceAfter > dstBalanceBefore, "Destination token not received");
+
+        uint256 actualReturnAmount = dstBalanceAfter - dstBalanceBefore;
+
+        // 9. Verify minimum return amount for slippage protection
+        require(actualReturnAmount >= _minReturnAmount, "Insufficient return amount from swap");
+
+        return actualReturnAmount;
+    }
+
+    /**
+     * @notice Verifies the SwapDescription struct in 1inch swap calldata
+     * @dev Decodes and validates srcToken, dstToken, and dstReceiver from swap() calldata
+     *      SwapDescription struct layout (1inch V5/V6):
+     *      - srcToken (address)
+     *      - dstToken (address)
+     *      - srcReceiver (address)
+     *      - dstReceiver (address)
+     *      - amount (uint256)
+     *      - minReturnAmount (uint256)
+     *      - flags (uint256)
+     * @param _swapParams The encoded swap calldata
+     * @param _expectedSrcToken Expected source token address
+     * @param _expectedDstToken Expected destination token address
+     */
+    function _verifySwapDescription(bytes memory _swapParams, address _expectedSrcToken, address _expectedDstToken)
+        internal
+        view
+    {
+        require(_swapParams.length >= 228, "Calldata too short for swap()"); // Minimum length for swap function
+
+        address srcToken;
+        address dstToken;
+        address dstReceiver;
+
+        assembly {
+            // Calldata layout for swap(address executor, SwapDescription desc, ...):
+            // 0-3: selector (4 bytes)
+            // 4-35: executor address (32 bytes)
+            // 36-67: SwapDescription offset (32 bytes)
+            // 68-99: permit offset (32 bytes)
+            // 100-131: data offset (32 bytes)
+            // 132-163: srcToken (32 bytes) - start of SwapDescription
+            // 164-195: dstToken (32 bytes)
+            // 196-227: srcReceiver (32 bytes)
+            // 228-259: dstReceiver (32 bytes)
+
+            let dataPtr := add(_swapParams, 32) // Skip length prefix
+            srcToken := mload(add(dataPtr, 132)) // Offset 132 for srcToken
+            dstToken := mload(add(dataPtr, 164)) // Offset 164 for dstToken
+            dstReceiver := mload(add(dataPtr, 228)) // Offset 228 for dstReceiver
         }
-        // Sanity check
-        require(returnAmount >= _minReturnAmount, "Insufficient return amount from swap");
-        return returnAmount;
+
+        require(srcToken == _expectedSrcToken, "Source token mismatch in swap description");
+        require(dstToken == _expectedDstToken, "Destination token mismatch in swap description");
+        require(dstReceiver == address(this), "Invalid destination receiver - tokens must come to this contract");
     }
 
     /**
@@ -1089,13 +1241,29 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
     /*//////////////////////////////////////////////////////////////
                     OnlyOwner and Utility Functions
     //////////////////////////////////////////////////////////////*/
+
+    /**
+     * @notice Burns the position NFT and marks the position as closed
+     * @dev Can only be called by the owner (NFT holder) and only if the position is safe to close
+     *      Position must be fully unwound (no debt) before burning
+     */
+    function burnPosition(address newOwner) external onlyOwner {
+        // Mark the position as burned in the NFT contract
+        strataxPositionNft.burn(tokenId);
+        // Update the burned token owner
+        burnedTokenOwner = newOwner;
+        isBurned = true;
+        // Emit event for off-chain tracking
+        emit PositionBurned(msg.sender, tokenId);
+    }
+
     /**
      * @notice Emergency function to recover tokens sent to contract
      * @param _token The token address to recover
      * @param _amount The amount to recover
      */
     function recoverTokens(address _token, uint256 _amount) external onlyOwner {
-        //Should this have some guardrails? like not allowing to recover collateral or debt tokens?
+        require(isBurned, "Position must be burned to recover tokens");
         IERC20(_token).safeTransfer(msg.sender, _amount);
     }
 
@@ -1216,5 +1384,19 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
         uint256 oldOffset = maxLeverageOffset;
         maxLeverageOffset = _newOffset;
         emit MaxLeverageOffsetUpdated(_newOffset, oldOffset);
+    }
+
+    /**
+     * @notice Extracts the function selector from encoded calldata
+     * @dev Useful for debugging and verifying 1inch swap data
+     * @param _calldata The encoded calldata
+     * @return selector The 4-byte function selector
+     */
+    function extractSelector(bytes memory _calldata) public pure returns (bytes4 selector) {
+        require(_calldata.length >= 4, "Calldata too short");
+        assembly {
+            selector := mload(add(_calldata, 32))
+        }
+        return selector;
     }
 }

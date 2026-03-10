@@ -16,12 +16,10 @@ interface IStrataxPositionNft is IERC721 {
         address borrowToken;
         /// @notice Address of the deployed Stratax proxy contract for this position
         address strataxProxy;
-        /// @notice Timestamp when the position was created
-        uint256 createdAt;
-        /// @notice Timestamp when the position was last modified
-        uint256 lastModifiedAt;
         /// @notice Whether this position is currently active
         bool isActive;
+        /// @notice Whether this position has been burned
+        bool isBurned;
     }
 
     /*//////////////////////////////////////////////////////////////

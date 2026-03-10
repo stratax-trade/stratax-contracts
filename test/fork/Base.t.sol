@@ -97,9 +97,13 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
 
         // Deploy all contracts using the same pattern as DeployStrataxSystem.s.sol
         deployStrataxOracle(admin);
-        deployFeeCollector(admin);
         deployStrataxBeacon(admin);
+        deployFeeCollector(admin, address(0)); // Pass address(0) initially, will be set after NFT deployment
         deployStrataxPositionNft(admin);
+
+        // Update FeeCollector with actual StrataxPositionNft address
+        vm.prank(admin);
+        feeCollector.setStrataxPositionNft(address(strataxPositionNft));
 
         // Mint position NFT which deploys Stratax proxy
         StrataxPositionNft.InitPositionParams memory emptyParams;
@@ -144,13 +148,16 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
     /**
      * @notice Deploys FeeCollector as a UUPS proxy
      * @param owner The address that will own the contract
+     * @param strataxPositionNftAddress The StrataxPositionNft address (can be address(0) initially)
      */
-    function deployFeeCollector(address owner) internal {
+    function deployFeeCollector(address owner, address strataxPositionNftAddress) internal {
         // Deploy implementation
         feeCollectorImplementation = new FeeCollector();
 
-        // Encode initialize call
-        bytes memory initData = abi.encodeWithSelector(FeeCollector.initialize.selector, owner, DEFAULT_STRATAX_FEE);
+        // Encode initialize call with strataxPositionNft parameter
+        bytes memory initData = abi.encodeWithSelector(
+            FeeCollector.initialize.selector, strataxPositionNftAddress, owner, DEFAULT_STRATAX_FEE
+        );
 
         // Deploy UUPS proxy
         feeCollectorProxy = new ERC1967Proxy(address(feeCollectorImplementation), initData);

@@ -60,12 +60,10 @@ contract StrataxPositionNft is
         address borrowToken;
         /// @notice Address of the deployed Stratax proxy contract for this position
         address strataxProxy;
-        /// @notice Timestamp when the position was created
-        uint256 createdAt;
-        /// @notice Timestamp when the position was last modified
-        uint256 lastModifiedAt;
         /// @notice Whether this position is currently active
         bool isActive;
+        /// @notice Whether this position has been burned
+        bool isBurned;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -104,6 +102,8 @@ contract StrataxPositionNft is
 
     /// @notice Mapping from token ID to position details
     mapping(uint256 => Position) public positions;
+
+    mapping(address => uint256) public strataxAddressToTokenId;
 
     /// @notice Base URI for token metadata
     string private _baseTokenUri;
@@ -338,10 +338,12 @@ contract StrataxPositionNft is
             collateralToken: collateralToken,
             borrowToken: borrowToken,
             strataxProxy: strataxProxy,
-            createdAt: block.timestamp,
-            lastModifiedAt: block.timestamp,
-            isActive: true
+            isActive: true,
+            isBurned: false
         });
+
+        // Map the Stratax proxy address to the token ID for easy lookup
+        strataxAddressToTokenId[strataxProxy] = tokenId;
 
         if (_openInitPosition) {
             // Mint the NFT
@@ -419,7 +421,7 @@ contract StrataxPositionNft is
 
         // Update position state
         positions[tokenId].isActive = false;
-        positions[tokenId].lastModifiedAt = block.timestamp;
+        positions[tokenId].isBurned = true;
 
         _burn(tokenId);
 

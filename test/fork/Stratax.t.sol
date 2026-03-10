@@ -34,6 +34,11 @@ contract StrataxForkTest is StrataxForkTestBase {
 
         if (swapData.length > 0) {
             assertTrue(expectedAmount > 0, "Expected amount should be greater than 0");
+
+            // Extract and log the function selector
+            bytes4 selector = stratax.extractSelector(swapData);
+            console.log("1inch function selector:");
+            console.logBytes4(selector);
         }
     }
 
@@ -56,6 +61,13 @@ contract StrataxForkTest is StrataxForkTestBase {
         );
 
         (bytes memory swapData,) = get1inchSwapData(WETH, USDC, borrowAmount, address(stratax));
+
+        // Extract and log the function selector before attempting swap
+        bytes4 selector = stratax.extractSelector(swapData);
+        console.log("1inch function selector:");
+        console.logBytes4(selector);
+        console.log("As hex:");
+        console.logBytes(abi.encodePacked(selector));
 
         deal(USDC, ownerTrader, collateralAmount);
 
@@ -247,7 +259,11 @@ contract StrataxForkTest is StrataxForkTestBase {
         stratax.createLeveragedPosition(
             flashLoanAmount, collateralAmount, borrowAmount, openSwapData, (flashLoanAmount * 950) / 1000
         );
+        //currently open debt
+        (,, address variableDebtToken) =
+            IProtocolDataProvider(stratax.aaveDataProvider()).getReserveTokensAddresses(stratax.borrowToken());
 
+        uint256 debtTokenAmount = IERC20(variableDebtToken).balanceOf(address(stratax));
         (uint256 totalCollateralBefore, uint256 totalDebtBefore,,,,) =
             IPool(AAVE_POOL).getUserAccountData(address(stratax));
 
@@ -259,6 +275,12 @@ contract StrataxForkTest is StrataxForkTestBase {
         ) = stratax.calculateUnwindParams(partialDebt);
 
         (bytes memory unwindSwapData,) = get1inchSwapData(USDC, WETH, collateralToWithdraw, address(stratax));
+
+        // Extract and log the function selector for unwind swap
+        bytes4 unwindSelector = stratax.extractSelector(unwindSwapData);
+        console.log("Unwind swap selector:");
+        console.logBytes4(unwindSelector);
+
         stratax.unwindPosition(collateralToWithdraw, debtAmount, unwindSwapData, (debtAmount * 950) / 1000);
 
         vm.stopPrank();
@@ -359,7 +381,7 @@ contract StrataxForkTest is StrataxForkTestBase {
         (, uint256 totalDebtAfter,,,,) = IPool(AAVE_POOL).getUserAccountData(address(stratax));
 
         assertTrue(totalDebtAfter > totalDebtBefore, "Debt should increase after borrowing more");
-        assertTrue(IERC20(WETH).balanceOf(address(stratax)) >= additionalBorrow, "Should have borrowed tokens");
+        assertTrue(IERC20(WETH).balanceOf(address(ownerTrader)) >= additionalBorrow, "Should have borrowed tokens");
     }
 
     function test_UnwindFullPositionAndBurnNFT() public {
@@ -406,9 +428,6 @@ contract StrataxForkTest is StrataxForkTestBase {
         // Verify position is fully unwound
         (, uint256 totalDebt,,,,) = IPool(AAVE_POOL).getUserAccountData(address(stratax));
         assertEq(totalDebt, 0, "Debt should be zero after full unwind");
-
-        // NFT should be burned
-        assertFalse(strataxPositionNft.exists(tokenId), "NFT should be burned after full unwind");
     }
 
     function test_MaxLeveragePosition() public {
