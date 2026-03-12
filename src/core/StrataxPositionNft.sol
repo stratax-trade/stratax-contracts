@@ -9,16 +9,18 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
-import {IProtocolDataProvider} from "./interfaces/external/IProtocolDataProvider.sol";
-import {IStrataxOracle} from "./interfaces/internal/IStrataxOracle.sol";
-import {IFeeCollector} from "./interfaces/internal/IFeeCollector.sol";
+import {IProtocolDataProvider} from "../interfaces/external/IProtocolDataProvider.sol";
+import {IStrataxOracle} from "../interfaces/internal/IStrataxOracle.sol";
+import {IFeeCollector} from "../interfaces/internal/IFeeCollector.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
-import {IPool} from "./interfaces/external/IPool.sol";
+import {IPool} from "../interfaces/external/IPool.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
+import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
+import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
 import {Stratax} from "./Stratax.sol";
-import {StrataxCalculations} from "./libraries/StrataxCalculations.sol";
+import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
 
 contract StrataxPositionNft is
     Initializable,
@@ -28,6 +30,11 @@ contract StrataxPositionNft is
     UUPSUpgradeable,
     IERC721Receiver
 {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
     /*//////////////////////////////////////////////////////////////
                             TYPE DECLARATIONS
     //////////////////////////////////////////////////////////////*/
@@ -177,6 +184,7 @@ contract StrataxPositionNft is
         require(params.aaveDataProvider != address(0), "Invalid Aave data provider address");
         require(params.oneInchRouter != address(0), "Invalid 1inch router address");
         require(params.strataxOracle != address(0), "Invalid Stratax oracle address");
+        require(params.feeCollector != address(0), "Invalid fee collector address");
         require(params.owner != address(0), "Invalid owner address");
 
         __ERC721_init("Stratax Position NFT", "STRX-POS");
@@ -444,7 +452,21 @@ contract StrataxPositionNft is
      */
     function setDefaultBorrowSafetyMargin(uint256 _borrowSafetyMargin) public onlyOwner {
         require(_borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invlaid borrowSafetMargin");
+        uint256 oldMargin = defaultBorrowSafetyMargin;
         defaultBorrowSafetyMargin = _borrowSafetyMargin;
+        emit DefaultBorrowSafetyMarginUpdated(oldMargin, _borrowSafetyMargin);
+    }
+
+    /**
+     * @notice Sets the default max leverage offset for newly deployed Stratax contracts
+     * @dev Can only be called by the contract owner. Offset is capped at 5% (500 bps with 4-decimal precision)
+     * @param _maxLeverageOffset The new max leverage offset (e.g., 75 = 0.75%)
+     */
+    function setDefaultMaxLeverageOffset(uint256 _maxLeverageOffset) public onlyOwner {
+        require(_maxLeverageOffset <= 500, "Max leverage offset too high");
+        uint256 oldOffset = defaultMaxLeverageOffset;
+        defaultMaxLeverageOffset = _maxLeverageOffset;
+        emit DefaultMaxLeverageOffsetUpdated(oldOffset, _maxLeverageOffset);
     }
 
     /**
@@ -543,17 +565,17 @@ contract StrataxPositionNft is
     /**
      * @notice Returns a limited number of positions owned by an address for pagination
      * @param owner The address to query
-     * @param amountofPositions The maximum number of positions to return (starting from index 0)
+     * @param amountOfPositions The maximum number of positions to return (starting from index 0)
      * @return tokenIds Array of token IDs owned by the address
      * @return positionList Array of position structs
      */
-    function getPositionsByOwner(address owner, uint256 amountofPositions)
+    function getPositionsByOwner(address owner, uint256 amountOfPositions)
         public
         view
         returns (uint256[] memory tokenIds, Position[] memory positionList)
     {
         uint256 balance = balanceOf(owner);
-        uint256 returnAmount = amountofPositions > balance ? balance : amountofPositions;
+        uint256 returnAmount = amountOfPositions > balance ? balance : amountOfPositions;
         tokenIds = new uint256[](returnAmount);
         positionList = new Position[](returnAmount);
 
@@ -633,6 +655,44 @@ contract StrataxPositionNft is
      */
     function _baseURI() internal view override returns (string memory) {
         return _baseTokenUri;
+    }
+
+    /**
+     * @notice Returns on-chain metadata for a position NFT
+     * @dev Metadata includes live position USD value and cumulative trading volume (USD)
+     * sourced from the Stratax proxy and FeeCollector contracts
+     */
+    function tokenURI(uint256 tokenId) public view override returns (string memory) {
+        require(_ownerOf(tokenId) != address(0), "ERC721Metadata: URI query for nonexistent token");
+
+        Position memory position = positions[tokenId];
+        uint256 positionUsdValue = Stratax(position.strataxProxy).getPositionUsdValue();
+        uint256 cumulativeTradeVolume = IFeeCollector(feeCollector).strataxTradeVolume(position.strataxProxy);
+
+        string memory imageUri =
+            bytes(_baseTokenUri).length == 0 ? "" : string.concat(_baseTokenUri, Strings.toString(tokenId));
+
+        string memory json = Base64.encode(
+            abi.encodePacked(
+                '{"name":"Stratax Position #',
+                Strings.toString(tokenId),
+                '","description":"Dynamic NFT metadata for a Stratax leveraged position.","image":"',
+                imageUri,
+                '","attributes":[{"trait_type":"Position USD Value","display_type":"number","value":',
+                Strings.toString(positionUsdValue),
+                '},{"trait_type":"Cumulative Trade Volume USD","display_type":"number","value":',
+                Strings.toString(cumulativeTradeVolume),
+                '},{"trait_type":"Collateral Token","value":"',
+                Strings.toHexString(uint256(uint160(position.collateralToken)), 20),
+                '"},{"trait_type":"Borrow Token","value":"',
+                Strings.toHexString(uint256(uint160(position.borrowToken)), 20),
+                '"},{"trait_type":"Stratax Proxy","value":"',
+                Strings.toHexString(uint256(uint160(position.strataxProxy)), 20),
+                '"}]}'
+            )
+        );
+
+        return string.concat("data:application/json;base64,", json);
     }
 
     /**

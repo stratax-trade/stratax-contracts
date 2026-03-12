@@ -7,7 +7,7 @@ import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/Own
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 import {StrataxPositionNft} from "./StrataxPositionNft.sol";
-import {StrataxCalculations} from "./libraries/StrataxCalculations.sol";
+import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
 
 /**
  * @title FeeCollector
@@ -26,6 +26,9 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     address public strataxPositionNft;
 
     uint256 public totalTradeVolume;
+
+    /// @notice Mapping of Stratax proxy address to cumulative trade volume
+    mapping(address => uint256) public strataxTradeVolume;
 
     /// @notice Set of all assets that have recorded trade volume
     EnumerableSet.AddressSet private _trackedAssets;
@@ -117,6 +120,7 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
         // Record trade volume
         assetTradeVolume[_asset] += _tradeSize;
+        strataxTradeVolume[msg.sender] += _tradeSize;
 
         totalTradeVolume += _tradeSize;
 
@@ -252,5 +256,5 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     /// @notice Storage gap for future upgrades
     /// @dev Reserves 50 storage slots for adding new state variables in future upgrades without affecting storage layout
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 }

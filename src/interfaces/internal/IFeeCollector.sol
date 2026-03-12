@@ -136,4 +136,11 @@ interface IFeeCollector {
      * @return The cumulative trade volume
      */
     function assetTradeVolume(address asset) external view returns (uint256);
+
+    /**
+     * @notice Gets cumulative trade volume for a Stratax proxy address
+     * @param strataxProxy The Stratax proxy address
+     * @return The cumulative trade volume attributed to the position
+     */
+    function strataxTradeVolume(address strataxProxy) external view returns (uint256);
 }

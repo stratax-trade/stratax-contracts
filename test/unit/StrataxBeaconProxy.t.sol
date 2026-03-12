@@ -2,8 +2,8 @@
 pragma solidity ^0.8.13;
 
 import {BaseStrataxTest} from "./BaseStrataxTest.sol";
-import {Stratax} from "../../src/Stratax.sol";
-import {StrataxPositionNft} from "../../src/StrataxPositionNft.sol";
+import {Stratax} from "../../src/core/Stratax.sol";
+import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 /**

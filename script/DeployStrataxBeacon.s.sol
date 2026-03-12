@@ -2,8 +2,8 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Stratax} from "../src/Stratax.sol";
-import {StrataxOracle} from "../src/StrataxOracle.sol";
+import {Stratax} from "../src/core/Stratax.sol";
+import {StrataxOracle} from "../src/core/StrataxOracle.sol";
 import {ConstantsEtMainnet} from "../test/Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";

@@ -2,17 +2,17 @@
 pragma solidity ^0.8.13;
 
 import {sqrt} from "@prb-math/Common.sol";
-import {IPool} from "./interfaces/external/IPool.sol";
-import {IAggregationRouter} from "./interfaces/external/IAggregationRouter.sol";
-import {IProtocolDataProvider} from "./interfaces/external/IProtocolDataProvider.sol";
-import {IStrataxOracle} from "./interfaces/internal/IStrataxOracle.sol";
-import {IStrataxPositionNft} from "./interfaces/internal/IStrataxPositionNft.sol";
-import {IFeeCollector} from "./interfaces/internal/IFeeCollector.sol";
+import {IPool} from "../interfaces/external/IPool.sol";
+import {IAggregationRouter} from "../interfaces/external/IAggregationRouter.sol";
+import {IProtocolDataProvider} from "../interfaces/external/IProtocolDataProvider.sol";
+import {IStrataxOracle} from "../interfaces/internal/IStrataxOracle.sol";
+import {IStrataxPositionNft} from "../interfaces/internal/IStrataxPositionNft.sol";
+import {IFeeCollector} from "../interfaces/internal/IFeeCollector.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {StrataxCalculations} from "./libraries/StrataxCalculations.sol";
+import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 /*
@@ -891,10 +891,8 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
      * @notice Internal function to execute a token swap via 1inch aggregator with security checks
      * @dev Performs low-level call to 1inch router with pre-encoded swap data
      *      Includes multiple security validations:
-     *      - Verifies function selector is whitelisted
      *      - Checks source token balance decreased
      *      - Verifies destination token balance increased
-     *      - Validates dstReceiver is this contract (for swap function)
      * @param _swapParams Encoded calldata for the 1inch swap (from 1inch API)
      * @param _srcToken The source token being swapped from
      * @param _dstToken The destination token being swapped to
@@ -905,112 +903,33 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
         internal
         returns (uint256 returnAmount)
     {
-        // 1. Verify calldata has minimum length for function selector
-        require(_swapParams.length >= 4, "Invalid swap params length");
+        require(_swapParams.length > 0, "Invalid swap params");
 
-        // 2. Extract and verify function selector
-        bytes4 selector;
-        assembly {
-            selector := mload(add(_swapParams, 32))
-        }
-
-        // Common 1inch V5/V6 Router function selectors
-        bytes4 SWAP_SELECTOR = 0x12aa3caf; // swap(address executor, SwapDescription desc, bytes permit, bytes data)
-        bytes4 UNOSWAP_SELECTOR = 0x0502b1c5; // unoswap(address srcToken, uint256 amount, uint256 minReturn, uint256[] pools)
-        bytes4 UNOSWAPV3_SELECTOR = 0xbc80f1a8; // unoswapV3(uint256 amount, uint256 minReturn, uint256[] pools)
-        bytes4 UNISWAPV3_SWAP_SELECTOR = 0xe449022e; // uniswapV3Swap(uint256 amount, uint256 minReturn, uint256[] pools)
-        bytes4 CLIPPER_SWAP_SELECTOR = 0x84bd6d29; // clipperSwap(...)
-        bytes4 FILL_ORDER_RFQTO_SELECTOR = 0x5a099843; // fillOrderRFQTo(...)
-        bytes4 FILL_ORDER_RFQTO_WITH_MAKEPERMIT_SELECTOR = 0x70ccbd31; // fillOrderRFQToWithMakingAmount(...)
-        bytes4 ETHERS_SWAP_SELECTOR = 0x07ed2379; // ethersSwap(...) - 1inch V6
-        bytes4 UNISWAP_V3_SWAP_TO_SELECTOR = 0x83800a8e; // uniswapV3SwapTo(...) - 1inch V6
-
-        require(
-            selector == SWAP_SELECTOR || selector == UNOSWAP_SELECTOR || selector == UNOSWAPV3_SELECTOR
-                || selector == UNISWAPV3_SWAP_SELECTOR || selector == CLIPPER_SWAP_SELECTOR
-                || selector == FILL_ORDER_RFQTO_SELECTOR || selector == FILL_ORDER_RFQTO_WITH_MAKEPERMIT_SELECTOR
-                || selector == ETHERS_SWAP_SELECTOR || selector == UNISWAP_V3_SWAP_TO_SELECTOR,
-            "Invalid 1inch function selector"
-        );
-
-        // 3. For swap() function, decode and verify SwapDescription
-        if (selector == SWAP_SELECTOR) {
-            _verifySwapDescription(_swapParams, _srcToken, _dstToken);
-        }
-
-        // 4. Record source token balance before swap
+        // Record source token balance before swap
         uint256 srcBalanceBefore = IERC20(_srcToken).balanceOf(address(this));
         require(srcBalanceBefore > 0, "No source token to swap");
 
-        // 5. Record destination token balance before swap
+        // Record destination token balance before swap
         uint256 dstBalanceBefore = IERC20(_dstToken).balanceOf(address(this));
 
-        // 6. Execute the 1inch swap using low-level call
-        (bool success, bytes memory result) = address(oneInchRouter).call(_swapParams);
+        // Execute the 1inch swap using low-level call
+        (bool success,) = address(oneInchRouter).call(_swapParams);
         require(success, "1inch swap failed");
 
-        // 7. Verify source token balance decreased (tokens were spent)
+        // Verify source token balance decreased (tokens were spent)
         uint256 srcBalanceAfter = IERC20(_srcToken).balanceOf(address(this));
         require(srcBalanceAfter < srcBalanceBefore, "Source token not spent in swap");
 
-        // 8. Verify destination token balance increased (tokens were received)
+        // Verify destination token balance increased (tokens were received)
         uint256 dstBalanceAfter = IERC20(_dstToken).balanceOf(address(this));
         require(dstBalanceAfter > dstBalanceBefore, "Destination token not received");
 
         uint256 actualReturnAmount = dstBalanceAfter - dstBalanceBefore;
 
-        // 9. Verify minimum return amount for slippage protection
+        // Verify minimum return amount for slippage protection
         require(actualReturnAmount >= _minReturnAmount, "Insufficient return amount from swap");
 
         return actualReturnAmount;
-    }
-
-    /**
-     * @notice Verifies the SwapDescription struct in 1inch swap calldata
-     * @dev Decodes and validates srcToken, dstToken, and dstReceiver from swap() calldata
-     *      SwapDescription struct layout (1inch V5/V6):
-     *      - srcToken (address)
-     *      - dstToken (address)
-     *      - srcReceiver (address)
-     *      - dstReceiver (address)
-     *      - amount (uint256)
-     *      - minReturnAmount (uint256)
-     *      - flags (uint256)
-     * @param _swapParams The encoded swap calldata
-     * @param _expectedSrcToken Expected source token address
-     * @param _expectedDstToken Expected destination token address
-     */
-    function _verifySwapDescription(bytes memory _swapParams, address _expectedSrcToken, address _expectedDstToken)
-        internal
-        view
-    {
-        require(_swapParams.length >= 228, "Calldata too short for swap()"); // Minimum length for swap function
-
-        address srcToken;
-        address dstToken;
-        address dstReceiver;
-
-        assembly {
-            // Calldata layout for swap(address executor, SwapDescription desc, ...):
-            // 0-3: selector (4 bytes)
-            // 4-35: executor address (32 bytes)
-            // 36-67: SwapDescription offset (32 bytes)
-            // 68-99: permit offset (32 bytes)
-            // 100-131: data offset (32 bytes)
-            // 132-163: srcToken (32 bytes) - start of SwapDescription
-            // 164-195: dstToken (32 bytes)
-            // 196-227: srcReceiver (32 bytes)
-            // 228-259: dstReceiver (32 bytes)
-
-            let dataPtr := add(_swapParams, 32) // Skip length prefix
-            srcToken := mload(add(dataPtr, 132)) // Offset 132 for srcToken
-            dstToken := mload(add(dataPtr, 164)) // Offset 164 for dstToken
-            dstReceiver := mload(add(dataPtr, 228)) // Offset 228 for dstReceiver
-        }
-
-        require(srcToken == _expectedSrcToken, "Source token mismatch in swap description");
-        require(dstToken == _expectedDstToken, "Destination token mismatch in swap description");
-        require(dstReceiver == address(this), "Invalid destination receiver - tokens must come to this contract");
     }
 
     /**

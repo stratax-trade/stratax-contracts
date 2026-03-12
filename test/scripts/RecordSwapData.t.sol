@@ -3,9 +3,9 @@ pragma solidity ^0.8.13;
 
 import {Test, console} from "forge-std/Test.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-import {Stratax} from "../../src/Stratax.sol";
-import {StrataxPositionNft} from "../../src/StrataxPositionNft.sol";
-import {StrataxOracle} from "../../src/StrataxOracle.sol";
+import {Stratax} from "../../src/core/Stratax.sol";
+import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
+import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";

@@ -2,7 +2,7 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Stratax} from "../src/Stratax.sol";
+import {Stratax} from "../src/core/Stratax.sol";
 
 contract StrataxScript is Script {
     Stratax public stratax;
