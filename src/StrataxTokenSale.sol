@@ -22,11 +22,11 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     uint256 public constant USD_PRICE_PRECISION = 10 ** USD_PRICE_DECIMALS;
 
     // tokenomics (community-first)
-    uint256 public constant TOKENOMICS_TOTAL_SUPPLY = 1_000_000_000;
-    uint256 public constant PUBLIC_SALE_ALLOCATION_BPS = 800; // 8%
+    uint256 public constant TOKENOMICS_TOTAL_SUPPLY = 100_000_000;
+    uint256 public constant PUBLIC_SALE_ALLOCATION_BPS = 2_000; // 20%
     uint256 public constant BPS = 10_000;
     uint256 public constant PUBLIC_SALE_TGE_BPS = 2_500; // 25% immediate unlock
-    uint256 public constant PUBLIC_SALE_VESTING_DURATION = 180 days; // 6 months linear vesting
+    uint256 public constant PUBLIC_SALE_VESTING_DURATION = 270 days; // 9 months linear vesting
 
     struct PaymentTokenConfig {
         bool isWhitelisted;
@@ -256,7 +256,7 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     }
 
     /**
-     * @notice Claims vested public sale tokens (75% linear unlock over 180 days from sale start)
+     * @notice Claims vested public sale tokens (75% linear unlock over 270 days from sale start)
      */
     function claimVestedTokens() external nonReentrant returns (uint256 claimedAmount) {
         claimedAmount = getClaimableVested(msg.sender);
@@ -270,7 +270,7 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     }
 
     /**
-     * @notice Returns the total token cap allocated to public sale (8% of 1B supply)
+     * @notice Returns the total token cap allocated to public sale (20% of 100M supply)
      */
     function getPublicSaleSupplyCap() public view returns (uint256) {
         uint8 strataxDecimals = IERC20Metadata(strataxToken).decimals();

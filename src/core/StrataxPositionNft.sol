@@ -111,12 +111,13 @@ contract StrataxPositionNft is
     mapping(uint256 => Position) public positions;
 
     mapping(address => uint256) public strataxAddressToTokenId;
+    mapping(address => uint256) public callerCreate2SaltNonce;
 
     /// @notice Base URI for token metadata
     string private _baseTokenUri;
 
     /// @notice Storage gap for future upgrades
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
@@ -160,6 +161,12 @@ contract StrataxPositionNft is
     /// @param oldOffset Previous default max leverage offset
     /// @param newOffset New default max leverage offset
     event DefaultMaxLeverageOffsetUpdated(uint256 indexed oldOffset, uint256 indexed newOffset);
+
+    /// @notice Emitted when a caller salt nonce is incremented after a successful deployment
+    /// @param caller The caller whose nonce was incremented
+    /// @param previousNonce Previous nonce value
+    /// @param newNonce New nonce value
+    event CallerCreate2SaltNonceIncremented(address indexed caller, uint256 previousNonce, uint256 newNonce);
 
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
@@ -336,10 +343,13 @@ contract StrataxPositionNft is
             initParams
         );
 
-        // Calculate salt from msg.sender and tokenId for deterministic address
-        bytes32 salt = keccak256(abi.encodePacked(msg.sender, tokenId));
+        // Use caller-specific incrementing salt nonce so each caller gets deterministic unique salts.
+        uint256 previousSaltNonce = callerCreate2SaltNonce[msg.sender];
+        bytes32 salt = getEffectiveCallerCreate2Salt(msg.sender);
 
         strataxProxy = _deployBeaconProxyWithCreate2(strataxBeacon, initData, salt);
+        callerCreate2SaltNonce[msg.sender] = previousSaltNonce + 1;
+        emit CallerCreate2SaltNonceIncremented(msg.sender, previousSaltNonce, previousSaltNonce + 1);
 
         // Create position data
         positions[tokenId] = Position({
@@ -414,7 +424,7 @@ contract StrataxPositionNft is
             initParams
         );
 
-        bytes32 salt = keccak256(abi.encodePacked(minter, tokenId));
+        bytes32 salt = getEffectiveCallerCreate2Salt(minter);
 
         return _predictCreate2Address(strataxBeacon, initData, salt);
     }
@@ -467,6 +477,16 @@ contract StrataxPositionNft is
         uint256 oldOffset = defaultMaxLeverageOffset;
         defaultMaxLeverageOffset = _maxLeverageOffset;
         emit DefaultMaxLeverageOffsetUpdated(oldOffset, _maxLeverageOffset);
+    }
+
+    /**
+     * @notice Returns the effective CREATE2 salt for a caller
+     * @dev Salt is derived from caller address and the caller's current salt nonce.
+     * @param caller Caller address
+     * @return salt Effective CREATE2 salt used for deployment and prediction
+     */
+    function getEffectiveCallerCreate2Salt(address caller) public view returns (bytes32 salt) {
+        salt = keccak256(abi.encodePacked(caller, callerCreate2SaltNonce[caller]));
     }
 
     /**
@@ -563,24 +583,28 @@ contract StrataxPositionNft is
     }
 
     /**
-     * @notice Returns a limited number of positions owned by an address for pagination
+     * @notice Returns positions owned by an address in the index range [startIndex, endIndex)
      * @param owner The address to query
-     * @param amountOfPositions The maximum number of positions to return (starting from index 0)
-     * @return tokenIds Array of token IDs owned by the address
-     * @return positionList Array of position structs
+     * @param startIndex The starting owner-token index (inclusive)
+     * @param endIndex The ending owner-token index (exclusive)
+     * @return tokenIds Array of token IDs owned by the address in the requested range
+     * @return positionList Array of position structs in the requested range
      */
-    function getPositionsByOwner(address owner, uint256 amountOfPositions)
+    function getPositionsByOwner(address owner, uint256 startIndex, uint256 endIndex)
         public
         view
         returns (uint256[] memory tokenIds, Position[] memory positionList)
     {
         uint256 balance = balanceOf(owner);
-        uint256 returnAmount = amountOfPositions > balance ? balance : amountOfPositions;
-        tokenIds = new uint256[](returnAmount);
-        positionList = new Position[](returnAmount);
+        require(startIndex <= endIndex, "Invalid index range");
+        require(endIndex <= balance, "Index out of bounds");
 
-        for (uint256 i = 0; i < returnAmount; i++) {
-            uint256 tokenId = tokenOfOwnerByIndex(owner, i);
+        uint256 rangeLength = endIndex - startIndex;
+        tokenIds = new uint256[](rangeLength);
+        positionList = new Position[](rangeLength);
+
+        for (uint256 i = 0; i < rangeLength; i++) {
+            uint256 tokenId = tokenOfOwnerByIndex(owner, startIndex + i);
             tokenIds[i] = tokenId;
             positionList[i] = positions[tokenId];
         }
