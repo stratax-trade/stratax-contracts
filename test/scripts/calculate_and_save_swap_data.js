@@ -18,6 +18,7 @@ const fs = require("fs");
 const path = require("path");
 
 const CHAIN_ID = 1; // Ethereum mainnet
+const FORGE_MAX_BUFFER = 50 * 1024 * 1024; // 50MB
 
 // Load .env file manually
 function loadEnvFile() {
@@ -38,9 +39,11 @@ function loadEnvFile() {
 }
 loadEnvFile();
 
-const API_KEY = process.env.ONE_INCH_API_KEY || process.env.INCH_API_KEY;
+const API_KEY = process.env.INCH_API_KEY || process.env["1INCH_API_KEY"];
 if (!API_KEY) {
-  console.error("Error: ONE_INCH_API_KEY environment variable not set");
+  console.error(
+    "Error: 1inch API key not found. Set one of: ONE_INCH_API_KEY, INCH_API_KEY, ONEINCH_API_KEY, or 1INCH_API_KEY",
+  );
   process.exit(1);
 }
 
@@ -164,13 +167,22 @@ async function recordSwapData(blockNumber) {
   try {
     // Run the forge test that will fetch real swap data
     const output = execSync(
-      `forge test --match-contract RecordSwapData --match-test test_RecordActualSwapData --match-path test/scripts/RecordSwapData.t.sol --fork-url ${ETH_RPC_URL} --fork-block-number ${blockNumber} -vv`,
-      { encoding: "utf8", cwd: path.join(__dirname, "..", "..") },
+      `forge test --match-contract RecordSwapData --match-test test_RecordActualSwapData --match-path test/scripts/RecordSwapData.t.sol --no-match-path test/does-not-exist --fork-url ${ETH_RPC_URL} --fork-block-number ${blockNumber} -vvvv`,
+      {
+        encoding: "utf8",
+        cwd: path.join(__dirname, "..", ".."),
+        maxBuffer: FORGE_MAX_BUFFER,
+      },
     );
 
+    // Remove ANSI escape sequences so regex parsing is stable.
+    const cleanOutput = output.replace(/\x1B\[[0-9;]*[A-Za-z]/g, "");
+
     // Parse the block number
-    const blockMatch = output.match(/BLOCK_NUMBER: (\d+)/);
+    const blockMatch = cleanOutput.match(/BLOCK_NUMBER:\s+(\d+)/);
     if (!blockMatch) {
+      console.error("\nForge output:");
+      console.error(output);
       throw new Error("Could not parse block number from test output");
     }
     const actualBlock = blockMatch[1];
@@ -181,7 +193,7 @@ async function recordSwapData(blockNumber) {
       /SWAP_START\s+KEY: (\S+)\s+FROM_TOKEN: (0x[a-fA-F0-9]+)\s+TO_TOKEN: (0x[a-fA-F0-9]+)\s+FROM_AMOUNT: (\d+)\s+SWAP_DATA: (0x[a-fA-F0-9]+)\s+SWAP_END/g;
 
     let match;
-    while ((match = swapRegex.exec(output)) !== null) {
+    while ((match = swapRegex.exec(cleanOutput)) !== null) {
       const [, key, fromToken, toToken, fromAmount, swapData] = match;
       swaps[key] = {
         fromToken,
@@ -200,6 +212,12 @@ async function recordSwapData(blockNumber) {
 
     return { blockNumber: actualBlock, swaps };
   } catch (error) {
+    if (error.stdout || error.stderr) {
+      console.error("\nForge stdout:");
+      if (error.stdout) console.error(String(error.stdout));
+      console.error("\nForge stderr:");
+      if (error.stderr) console.error(String(error.stderr));
+    }
     throw new Error(`Failed to record swap data: ${error.message}`);
   }
 }

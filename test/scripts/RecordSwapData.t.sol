@@ -6,11 +6,11 @@ import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Stratax} from "../../src/core/Stratax.sol";
 import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
+import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
-import {TransparentUpgradeableProxy} from "@openzeppelin/contracts/proxy/transparent/TransparentUpgradeableProxy.sol";
-import {ProxyAdmin} from "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /// @notice Test that records actual swap data used during test execution
 /// @dev Run via: node test/scripts/calculate_and_save_swap_data.js
@@ -18,28 +18,45 @@ import {ProxyAdmin} from "@openzeppelin/contracts/proxy/transparent/ProxyAdmin.s
 contract RecordSwapData is Test, ConstantsEtMainnet {
     Stratax public stratax;
     StrataxOracle public strataxOracle;
+    FeeCollector public feeCollector;
     StrataxPositionNft public strataxPositionNft;
     address public ownerTrader;
     uint256 public tokenId;
 
+    mapping(bytes32 => bool) private recordedSwapKeys;
+
     function setUp() public {
         ownerTrader = address(0x123);
+        address admin = makeAddr("admin");
 
-        strataxOracle = new StrataxOracle();
-        strataxOracle.setPriceFeed(USDC, USDC_PRICE_FEED);
-        strataxOracle.setPriceFeed(WETH, WETH_PRICE_FEED);
+        // Match StrataxForkTestBase deployment pattern so generated proxy addresses line up.
+        StrataxOracle strataxOracleImplementation = new StrataxOracle();
+        bytes memory oracleInitData = abi.encodeWithSelector(StrataxOracle.initialize.selector, admin);
+        ERC1967Proxy oracleProxy = new ERC1967Proxy(address(strataxOracleImplementation), oracleInitData);
+        strataxOracle = StrataxOracle(address(oracleProxy));
 
-        // Deploy Stratax implementation and beacon
+        address[] memory tokens = new address[](2);
+        tokens[0] = USDC;
+        tokens[1] = WETH;
+
+        address[] memory priceFeeds = new address[](2);
+        priceFeeds[0] = USDC_PRICE_FEED;
+        priceFeeds[1] = WETH_PRICE_FEED;
+
+        vm.prank(admin);
+        strataxOracle.setPriceFeeds(tokens, priceFeeds);
+
         Stratax strataxImplementation = new Stratax();
-        UpgradeableBeacon strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), address(this));
+        UpgradeableBeacon strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), admin);
 
-        // Deploy StrataxPositionNft implementation
+        FeeCollector feeCollectorImplementation = new FeeCollector();
+        bytes memory feeCollectorInitData =
+            abi.encodeWithSelector(FeeCollector.initialize.selector, address(0), admin, uint256(5));
+        ERC1967Proxy feeCollectorProxy = new ERC1967Proxy(address(feeCollectorImplementation), feeCollectorInitData);
+        feeCollector = FeeCollector(address(feeCollectorProxy));
+
         StrataxPositionNft strataxPositionNftImplementation = new StrataxPositionNft();
 
-        // Deploy ProxyAdmin
-        ProxyAdmin proxyAdmin = new ProxyAdmin(address(this));
-
-        // Initialize StrataxPositionNft via TransparentUpgradeableProxy
         StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
             StrataxPositionNft.StrataxPositionNftInitParams({
                 strataxBeacon: address(strataxBeacon),
@@ -47,16 +64,17 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
                 aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
                 oneInchRouter: INCH_ROUTER,
                 strataxOracle: address(strataxOracle),
-                feeCollector: address(0),
-                owner: address(this),
-                uri: "https://stratax.io/nft/"
+                feeCollector: address(feeCollector),
+                owner: admin,
+                uri: "https://api.stratax.io/nft/metadata/"
             });
 
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
-        TransparentUpgradeableProxy nftProxy = new TransparentUpgradeableProxy(
-            address(strataxPositionNftImplementation), address(proxyAdmin), nftInitData
-        );
+        ERC1967Proxy nftProxy = new ERC1967Proxy(address(strataxPositionNftImplementation), nftInitData);
         strataxPositionNft = StrataxPositionNft(address(nftProxy));
+
+        vm.prank(admin);
+        feeCollector.setStrataxPositionNft(address(strataxPositionNft));
 
         // Mint position NFT which deploys Stratax proxy
         StrataxPositionNft.InitPositionParams memory emptyParams;
@@ -67,7 +85,7 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
     }
 
     /// @notice Get 1inch swap data via FFI
-    function get1inchSwapData(address fromToken, address toToken, uint256 amount)
+    function get1inchSwapData(address fromToken, address toToken, uint256 amount, address fromAddress)
         internal
         returns (bytes memory swapData, string memory key)
     {
@@ -77,7 +95,7 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         inputs[2] = vm.toString(fromToken);
         inputs[3] = vm.toString(toToken);
         inputs[4] = vm.toString(amount);
-        inputs[5] = vm.toString(address(stratax));
+        inputs[5] = vm.toString(fromAddress);
 
         bytes memory result = vm.ffi(inputs);
         string memory jsonResponse = string(result);
@@ -85,12 +103,40 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         bytes memory dataBytes = vm.parseJson(jsonResponse, ".tx.data");
         swapData = abi.decode(dataBytes, (bytes));
 
-        // Create the key for this swap
+        // Include fromAddress because 1inch calldata is tied to the sender address.
         string memory fromSymbol = fromToken == WETH ? "WETH" : "USDC";
         string memory toSymbol = toToken == WETH ? "WETH" : "USDC";
-        key = string.concat(fromSymbol, "_to_", toSymbol, "_", vm.toString(amount));
+        key = string.concat(fromSymbol, "_to_", toSymbol, "_", vm.toString(amount), "_from_", vm.toString(fromAddress));
 
         return (swapData, key);
+    }
+
+    function _recordSwapAndGet(address fromToken, address toToken, uint256 amount, address fromAddress)
+        internal
+        returns (bytes memory)
+    {
+        (bytes memory swapData, string memory key) = get1inchSwapData(fromToken, toToken, amount, fromAddress);
+        bytes32 keyHash = keccak256(bytes(key));
+
+        // Avoid duplicate API calls/entries for identical swap keys.
+        if (recordedSwapKeys[keyHash]) {
+            return swapData;
+        }
+        recordedSwapKeys[keyHash] = true;
+
+        console.log("SWAP_START");
+        console.log("KEY:", key);
+        console.log("FROM_TOKEN:", fromToken);
+        console.log("TO_TOKEN:", toToken);
+        console.log("FROM_AMOUNT:", amount);
+        console.log("SWAP_DATA:", vm.toString(swapData));
+        console.log("SWAP_END");
+
+        return swapData;
+    }
+
+    function _recordSwap(address fromToken, address toToken, uint256 amount, address fromAddress) internal {
+        _recordSwapAndGet(fromToken, toToken, amount, fromAddress);
     }
 
     /// @notice Record swap data by running actual test with 1inch API
@@ -98,53 +144,130 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         console.log("SWAP_DATA_RECORD_START");
         console.log("BLOCK_NUMBER:", block.number);
 
-        uint256 collateralAmount = 1000 * 10 ** 6;
+        // test_FFI_Get1inchSwapData
+        _recordSwap(USDC, WETH, 1000 * 10 ** 6, address(stratax));
 
-        // Calculate params for opening position
-        (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
+        // Open-position swap keys used across StrataxForkTest.
+        uint256 collateral1000 = 1000 * 10 ** 6;
+        uint256 collateral2000 = 2000 * 10 ** 6;
+
+        (uint256 flashLoan38939, uint256 borrow38939) = stratax.calculateOpenParams(
             Stratax.CalcOpenParams({
-                desiredLeverage: 30_000,
-                collateralAmount: collateralAmount,
+                desiredLeverage: 38_939, collateralAmount: collateral1000, collateralTokenPrice: 0, borrowTokenPrice: 0
+            })
+        );
+        _recordSwap(WETH, USDC, borrow38939, address(stratax));
+
+        (uint256 flashLoan20000, uint256 borrow20000) = stratax.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: 20_000, collateralAmount: collateral1000, collateralTokenPrice: 0, borrowTokenPrice: 0
+            })
+        );
+        _recordSwap(WETH, USDC, borrow20000, address(stratax));
+
+        (uint256 flashLoan25000_1000, uint256 borrow25000_1000) = stratax.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: 25_000, collateralAmount: collateral1000, collateralTokenPrice: 0, borrowTokenPrice: 0
+            })
+        );
+        _recordSwap(WETH, USDC, borrow25000_1000, address(stratax));
+
+        (uint256 flashLoan30000, uint256 borrow30000) = stratax.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: 30_000, collateralAmount: collateral1000, collateralTokenPrice: 0, borrowTokenPrice: 0
+            })
+        );
+        bytes memory openSwap30000 = _recordSwapAndGet(WETH, USDC, borrow30000, address(stratax));
+
+        // Uses StrataxPositionNft.calculateInitOpenParams in the fork test.
+        (uint256 flashLoan25000_2000, uint256 borrow25000_2000,) =
+            strataxPositionNft.calculateInitOpenParams(USDC, WETH, collateral2000, 25_000);
+        _recordSwap(WETH, USDC, borrow25000_2000, address(stratax));
+
+        uint256 maxLeverage = stratax.getMaxAchievableLeverageBinary();
+        (uint256 flashLoanMax, uint256 borrowMax) = stratax.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: maxLeverage,
+                collateralAmount: collateral2000,
                 collateralTokenPrice: 0,
                 borrowTokenPrice: 0
             })
         );
+        _recordSwap(WETH, USDC, borrowMax, address(stratax));
 
-        // Get swap data for opening position (WETH -> USDC)
-        (bytes memory openSwapData, string memory openKey) = get1inchSwapData(WETH, USDC, borrowAmount);
-        console.log("SWAP_START");
-        console.log("KEY:", openKey);
-        console.log("FROM_TOKEN:", WETH);
-        console.log("TO_TOKEN:", USDC);
-        console.log("FROM_AMOUNT:", borrowAmount);
-        console.log("SWAP_DATA:", vm.toString(openSwapData));
-        console.log("SWAP_END");
-
-        // Open the position
-        deal(USDC, ownerTrader, collateralAmount);
+        // Open a reference position to derive unwind amounts used by tests.
+        deal(USDC, ownerTrader, collateral1000);
         vm.startPrank(ownerTrader);
-        IERC20(USDC).approve(address(stratax), collateralAmount);
-        stratax.createLeveragedPosition(
-            flashLoanAmount, collateralAmount, borrowAmount, openSwapData, (flashLoanAmount * 950) / 1000
-        );
+        IERC20(USDC).approve(address(stratax), collateral1000);
+        stratax.createLeveragedPosition(flashLoan30000, collateral1000, borrow30000, openSwap30000, 0);
 
-        // Calculate unwind params
-        (
-            uint256 collateralToWithdraw,
-            /* uint256 debtAmount */, /*  uint256 strataxFee */
-        ) = stratax.calculateUnwindParams(type(uint256).max);
-
-        // Get swap data for unwinding position (USDC -> WETH)
-        (bytes memory unwindSwapData, string memory unwindKey) = get1inchSwapData(USDC, WETH, collateralToWithdraw);
-        console.log("SWAP_START");
-        console.log("KEY:", unwindKey);
-        console.log("FROM_TOKEN:", USDC);
-        console.log("TO_TOKEN:", WETH);
-        console.log("FROM_AMOUNT:", collateralToWithdraw);
-        console.log("SWAP_DATA:", vm.toString(unwindSwapData));
-        console.log("SWAP_END");
+        // test_PartialUnwindPosition -> calculateUnwindParams(partialDebt), then *102/100
+        (, uint256 totalDebt30000,,,,) = IPool(AAVE_POOL).getUserAccountData(address(stratax));
+        uint256 halfDebt30000 = totalDebt30000 / 2;
+        (uint256 partialUnwindCollateral30000,,) = stratax.calculateUnwindParams(halfDebt30000);
+        uint256 partialUnwindCollateral30000Buffered = (partialUnwindCollateral30000 * 102) / 100;
+        _recordSwap(USDC, WETH, partialUnwindCollateral30000Buffered, address(stratax));
 
         vm.stopPrank();
+
+        // Re-mint a fresh USDC/WETH position for 20k leverage unwind variants.
+        StrataxPositionNft.InitPositionParams memory emptyParams1;
+        (uint256 tokenId20k, address strataxProxy20k) =
+            strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams1);
+        Stratax stratax20k = Stratax(strataxProxy20k);
+
+        deal(USDC, ownerTrader, collateral1000);
+        vm.startPrank(ownerTrader);
+        IERC20(USDC).approve(address(stratax20k), collateral1000);
+        bytes memory openSwap20000Proxy = _recordSwapAndGet(WETH, USDC, borrow20000, address(stratax20k));
+        stratax20k.createLeveragedPosition(flashLoan20000, collateral1000, borrow20000, openSwap20000Proxy, 0);
+
+        // test_OpenAndUnwindPosition + test_UnwindFullPositionAndBurnNFT (full unwind with manual 3% buffer)
+        (uint256 fullUnwindCollateral20k,,) = stratax20k.calculateUnwindParams(type(uint256).max);
+        uint256 fullUnwindCollateral20kBuffered = (fullUnwindCollateral20k * 103) / 100;
+        _recordSwap(USDC, WETH, fullUnwindCollateral20kBuffered, address(stratax20k));
+
+        // test_CalculateUnwindParamsWithSlippageBps_FullUnwind
+        (uint256 fullUnwindWithBps20k,,) = stratax20k.calculateUnwindParams(type(uint256).max, 300);
+        _recordSwap(USDC, WETH, fullUnwindWithBps20k, address(stratax20k));
+
+        vm.stopPrank();
+
+        // Fresh USDC/WETH position for 25k leverage unwind-with-slippage variant.
+        StrataxPositionNft.InitPositionParams memory emptyParams2;
+        (, address strataxProxy25k) = strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams2);
+        Stratax stratax25k = Stratax(strataxProxy25k);
+
+        deal(USDC, ownerTrader, collateral1000);
+        vm.startPrank(ownerTrader);
+        IERC20(USDC).approve(address(stratax25k), collateral1000);
+        bytes memory openSwap25000Proxy = _recordSwapAndGet(WETH, USDC, borrow25000_1000, address(stratax25k));
+        stratax25k.createLeveragedPosition(flashLoan25000_1000, collateral1000, borrow25000_1000, openSwap25000Proxy, 0);
+
+        (, uint256 totalDebt25000,,,,) = IPool(AAVE_POOL).getUserAccountData(address(stratax25k));
+        uint256 halfDebt25000 = totalDebt25000 / 2;
+        (uint256 partialUnwindWithBps25k,,) = stratax25k.calculateUnwindParams(halfDebt25000, 300);
+        _recordSwap(USDC, WETH, partialUnwindWithBps25k, address(stratax25k));
+        vm.stopPrank();
+
+        // test_MultiplePositionsSameOwner second position (WETH collateral / USDC borrow)
+        address multiTrader = address(0xBEEF);
+        StrataxPositionNft.InitPositionParams memory emptyParams3;
+        (, address strataxProxy2) = strataxPositionNft.mintPositionNft(multiTrader, WETH, USDC, false, emptyParams3);
+        Stratax stratax2 = Stratax(strataxProxy2);
+
+        (, uint256 borrowReversePair) = stratax2.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: 20_000, collateralAmount: 0.5 ether, collateralTokenPrice: 0, borrowTokenPrice: 0
+            })
+        );
+        _recordSwap(USDC, WETH, borrowReversePair, address(strataxProxy2));
+
+        // Silence warnings for calculated values used only for deterministic scenario coverage.
+        flashLoan38939;
+        flashLoan25000_2000;
+        flashLoanMax;
+        tokenId20k;
 
         console.log("SWAP_DATA_RECORD_END");
     }

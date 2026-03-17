@@ -34,6 +34,13 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         uint256 maxPriceAge;
     }
 
+    struct ManualVestingSchedule {
+        uint256 totalAmount;
+        uint256 claimedAmount;
+        uint64 startTimestamp;
+        uint64 duration;
+    }
+
     address public strataxToken;
     address public paymentRecipient;
     address public pyth;
@@ -49,6 +56,7 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     mapping(address => uint256) public totalPurchased;
     mapping(address => uint256) public totalVestedAllocation;
     mapping(address => uint256) public vestedClaimed;
+    mapping(address => ManualVestingSchedule[]) private manualVestings;
 
     event StrataxPriceUpdated(uint256 oldPriceUsd, uint256 newPriceUsd);
     event PaymentRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
@@ -66,6 +74,14 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         uint256 strataxOut
     );
     event VestedTokensClaimed(address indexed buyer, uint256 amount);
+    event ManualVestingCreated(
+        address indexed beneficiary,
+        uint256 indexed scheduleIndex,
+        uint256 amount,
+        uint64 startTimestamp,
+        uint64 duration
+    );
+    event ManualVestingTokensClaimed(address indexed beneficiary, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -157,6 +173,18 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
      * @dev Closing is irreversible and does not affect vested-claim functionality.
      */
     function closeSale() external onlyOwner {
+        _stopSale();
+    }
+
+    /**
+     * @notice Owner permanently stops purchases.
+     * @dev Alias for closeSale for clearer operator intent.
+     */
+    function stopSale() external onlyOwner {
+        _stopSale();
+    }
+
+    function _stopSale() internal {
         require(!saleClosed, "Sale already closed");
         saleClosed = true;
         salePaused = true;
@@ -270,6 +298,95 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     }
 
     /**
+     * @notice Owner creates a manual linear vesting schedule for a beneficiary.
+     * @param beneficiary Address that receives vested tokens over time.
+     * @param amount Total token amount to vest.
+     * @param startTimestamp Vesting start timestamp.
+     * @param duration Vesting duration in seconds.
+     */
+    function createManualVesting(address beneficiary, uint256 amount, uint64 startTimestamp, uint64 duration)
+        external
+        onlyOwner
+    {
+        require(beneficiary != address(0), "Invalid beneficiary");
+        require(amount > 0, "Invalid vesting amount");
+        require(duration > 0, "Invalid vesting duration");
+
+        uint256 index = manualVestings[beneficiary].length;
+        manualVestings[beneficiary].push(
+            ManualVestingSchedule({
+                totalAmount: amount, claimedAmount: 0, startTimestamp: startTimestamp, duration: duration
+            })
+        );
+
+        emit ManualVestingCreated(beneficiary, index, amount, startTimestamp, duration);
+    }
+
+    /**
+     * @notice Owner creates multiple manual linear vesting schedules in one transaction.
+     * @param beneficiaries Addresses that receive vested tokens over time.
+     * @param amounts Total token amounts to vest per beneficiary.
+     * @param startTimestamps Vesting start timestamps per schedule.
+     * @param durations Vesting durations in seconds per schedule.
+     */
+    function createManualVestings(
+        address[] calldata beneficiaries,
+        uint256[] calldata amounts,
+        uint64[] calldata startTimestamps,
+        uint64[] calldata durations
+    ) external onlyOwner {
+        uint256 len = beneficiaries.length;
+        require(len > 0, "Empty vesting batch");
+        require(amounts.length == len, "Array length mismatch");
+        require(startTimestamps.length == len, "Array length mismatch");
+        require(durations.length == len, "Array length mismatch");
+
+        for (uint256 i = 0; i < len; i++) {
+            address beneficiary = beneficiaries[i];
+            uint256 amount = amounts[i];
+            uint64 startTimestamp = startTimestamps[i];
+            uint64 duration = durations[i];
+
+            require(beneficiary != address(0), "Invalid beneficiary");
+            require(amount > 0, "Invalid vesting amount");
+            require(duration > 0, "Invalid vesting duration");
+
+            uint256 index = manualVestings[beneficiary].length;
+            manualVestings[beneficiary].push(
+                ManualVestingSchedule({
+                    totalAmount: amount, claimedAmount: 0, startTimestamp: startTimestamp, duration: duration
+                })
+            );
+
+            emit ManualVestingCreated(beneficiary, index, amount, startTimestamp, duration);
+        }
+    }
+
+    /**
+     * @notice Claims all currently unlocked amounts from manual vesting schedules.
+     */
+    function claimManualVestedTokens() external nonReentrant returns (uint256 claimedAmount) {
+        ManualVestingSchedule[] storage schedules = manualVestings[msg.sender];
+        uint256 len = schedules.length;
+
+        for (uint256 i = 0; i < len; i++) {
+            uint256 unlocked = _getManualUnlockedAmount(schedules[i]);
+            uint256 alreadyClaimed = schedules[i].claimedAmount;
+            if (unlocked > alreadyClaimed) {
+                uint256 claimable = unlocked - alreadyClaimed;
+                schedules[i].claimedAmount = alreadyClaimed + claimable;
+                claimedAmount += claimable;
+            }
+        }
+
+        require(claimedAmount > 0, "No manual vested tokens claimable");
+        require(IERC20(strataxToken).balanceOf(address(this)) >= claimedAmount, "Insufficient sale inventory");
+
+        IERC20(strataxToken).safeTransfer(msg.sender, claimedAmount);
+        emit ManualVestingTokensClaimed(msg.sender, claimedAmount);
+    }
+
+    /**
      * @notice Returns the total token cap allocated to public sale (20% of 100M supply)
      */
     function getPublicSaleSupplyCap() public view returns (uint256) {
@@ -291,11 +408,62 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     }
 
     /**
+     * @notice Returns currently claimable amount across all manual vesting schedules.
+     */
+    function getClaimableManualVested(address account) public view returns (uint256 claimable) {
+        ManualVestingSchedule[] memory schedules = manualVestings[account];
+        uint256 len = schedules.length;
+
+        for (uint256 i = 0; i < len; i++) {
+            uint256 unlocked = _getManualUnlockedAmount(schedules[i]);
+            if (unlocked > schedules[i].claimedAmount) {
+                claimable += unlocked - schedules[i].claimedAmount;
+            }
+        }
+    }
+
+    /**
+     * @notice Returns the number of manual vesting schedules for an account.
+     */
+    function getManualVestingCount(address account) external view returns (uint256) {
+        return manualVestings[account].length;
+    }
+
+    /**
+     * @notice Returns a manual vesting schedule by index.
+     */
+    function getManualVesting(address account, uint256 index)
+        external
+        view
+        returns (uint256 totalAmount, uint256 claimedAmount, uint64 startTimestamp, uint64 duration)
+    {
+        ManualVestingSchedule memory schedule = manualVestings[account][index];
+        return (schedule.totalAmount, schedule.claimedAmount, schedule.startTimestamp, schedule.duration);
+    }
+
+    /**
      * @notice Owner can withdraw unsold STRATAX tokens.
      */
     function withdrawUnsoldTokens(address to, uint256 amount) external onlyOwner {
         require(to != address(0), "Invalid recipient");
+        require(saleClosed, "Sale must be closed");
+        require(amount > 0, "Invalid amount");
+
+        uint256 unsoldAvailable = getUnsoldTokensAvailable();
+        require(amount <= unsoldAvailable, "Amount exceeds unsold tokens");
+
         IERC20(strataxToken).safeTransfer(to, amount);
+    }
+
+    /**
+     * @notice Returns how many unsold tokens are available to withdraw after sale closure.
+     */
+    function getUnsoldTokensAvailable() public view returns (uint256) {
+        uint256 supplyCap = getPublicSaleSupplyCap();
+        if (totalPublicSaleSold >= supplyCap) {
+            return 0;
+        }
+        return supplyCap - totalPublicSaleSold;
     }
 
     function _calculateStrataxOut(address paymentToken, uint256 paymentAmount, uint256 paymentTokenPriceUsd)
@@ -326,6 +494,19 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         unlocked = (vestedAllocation * elapsed) / PUBLIC_SALE_VESTING_DURATION;
     }
 
+    function _getManualUnlockedAmount(ManualVestingSchedule memory schedule) internal view returns (uint256 unlocked) {
+        if (block.timestamp <= schedule.startTimestamp) {
+            return 0;
+        }
+
+        uint256 elapsed = block.timestamp - uint256(schedule.startTimestamp);
+        if (elapsed >= uint256(schedule.duration)) {
+            return schedule.totalAmount;
+        }
+
+        return (schedule.totalAmount * elapsed) / uint256(schedule.duration);
+    }
+
     function _normalizePythPriceToUsdE8(int64 price, int32 expo) internal pure returns (uint256 normalizedPrice) {
         require(price > 0, "Invalid Pyth price");
 
@@ -351,5 +532,5 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     receive() external payable {}
 
     /// @notice Storage gap for future upgrades.
-    uint256[50] private __gap;
+    uint256[49] private __gap;
 }

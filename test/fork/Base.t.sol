@@ -295,7 +295,7 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
      * @return swapData The encoded swap calldata
      * @return expectedAmount The expected output amount (0 for saved data)
      */
-    function getSavedSwapData(address fromToken, address toToken, uint256 amount)
+    function getSavedSwapData(address fromToken, address toToken, uint256 amount, address fromAddress)
         internal
         view
         returns (bytes memory swapData, uint256 expectedAmount)
@@ -305,18 +305,28 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
             string.concat(root, "/test/fixtures/swap_data_block_", vm.toString(SAVED_DATA_BLOCK), ".json");
         string memory json = vm.readFile(path);
 
-        // Create lookup key: "SYMBOL_to_SYMBOL_AMOUNT"
+        // Preferred lookup key includes fromAddress because 1inch calldata can be address-bound.
         string memory fromSymbol = fromToken == WETH ? "WETH" : "USDC";
         string memory toSymbol = toToken == WETH ? "WETH" : "USDC";
-        string memory key = string.concat(".swaps.", fromSymbol, "_to_", toSymbol, "_", vm.toString(amount));
+        string memory keyWithAddress =
+            string.concat(fromSymbol, "_to_", toSymbol, "_", vm.toString(amount), "_from_", vm.toString(fromAddress));
 
-        // Parse the swap data
-        bytes memory swapDataBytes = vm.parseJson(json, string.concat(key, ".swapData"));
-        swapData = abi.decode(swapDataBytes, (bytes));
+        // Try address-aware key first.
+        try this.readSavedSwapDataByKey(json, keyWithAddress) returns (bytes memory foundSwapData) {
+            return (foundSwapData, 0);
+        } catch {}
 
-        // toAmount is not saved in our JSON format, so return 0
-        // The actual amount will be determined by the swap execution
-        expectedAmount = 0;
+        // No matching saved entry found for this scenario.
+        return (bytes(""), 0);
+    }
+
+    /**
+     * @notice Parse a specific swap entry from JSON fixtures.
+     * @dev External wrapper is used so callers can try/catch parse failures.
+     */
+    function readSavedSwapDataByKey(string memory json, string memory key) external view returns (bytes memory) {
+        bytes memory swapDataBytes = vm.parseJson(json, string.concat(".swaps.", key, ".swapData"));
+        return abi.decode(swapDataBytes, (bytes));
     }
 
     /**
@@ -334,7 +344,7 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
     {
         // If no API key and we're using saved data, try to get it from saved data
         if (!hasApiKey && usesSavedData) {
-            (swapData, expectedAmount) = getSavedSwapData(fromToken, toToken, amount);
+            (swapData, expectedAmount) = getSavedSwapData(fromToken, toToken, amount, fromAddress);
             // If we found saved data, return it
             if (swapData.length > 0) {
                 return (swapData, expectedAmount);
