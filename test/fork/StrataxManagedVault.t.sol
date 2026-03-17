@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Stratax} from "../../src/core/Stratax.sol";
 import {StrataxManagedVault} from "../../src/core/StrataxManagedVault.sol";
+import {StrataxManagedVaultDeployer} from "../../src/core/StrataxManagedVaultDeployer.sol";
 import {IFeeCollector} from "../../src/interfaces/internal/IFeeCollector.sol";
 import {IStrataxOracle} from "../../src/interfaces/internal/IStrataxOracle.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
@@ -17,6 +18,7 @@ import {StrataxForkTestBase} from "./Base.t.sol";
  */
 contract StrataxManagedVaultForkTest is StrataxForkTestBase {
     StrataxManagedVault public vault;
+    StrataxManagedVaultDeployer public vaultDeployer;
 
     address public manager;
     address public investor;
@@ -29,7 +31,11 @@ contract StrataxManagedVaultForkTest is StrataxForkTestBase {
         manager = makeAddr("manager");
         investor = makeAddr("investor");
 
-        vault = new StrataxManagedVault(address(stratax), manager, "Stratax Managed Vault USDC", "smvUSDC");
+        vaultDeployer = new StrataxManagedVaultDeployer(address(this));
+        address vaultProxy = vaultDeployer.deployVault(
+            address(stratax), manager, "Stratax Managed Vault USDC", "smvUSDC", StrataxCalculations.LEVERAGE_PRECISION
+        );
+        vault = StrataxManagedVault(vaultProxy);
     }
 
     function test_DepositAndRedeem_MintsAndBurnsShares() public {

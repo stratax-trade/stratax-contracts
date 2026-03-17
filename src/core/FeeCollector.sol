@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import {IERC20} from "forge-std/interfaces/IERC20.sol";
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
@@ -16,6 +17,7 @@ import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
  */
 contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     using EnumerableSet for EnumerableSet.AddressSet;
+    using SafeERC20 for IERC20;
 
     /*//////////////////////////////////////////////////////////////
                             STATE VARIABLES
@@ -33,8 +35,38 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /// @notice Set of all assets that have recorded trade volume
     EnumerableSet.AddressSet private _trackedAssets;
 
+    /// @notice Set of fee tokens that currently have/had protocol fee collection
+    EnumerableSet.AddressSet private _trackedFeeTokens;
+
     /// @notice Mapping of asset address to cumulative trade volume
     mapping(address => uint256) public assetTradeVolume;
+
+    /// @notice Mapping of asset address to cumulative fee amount collected
+    mapping(address => uint256) public assetFeesCollected;
+
+    /// @notice Mapping of asset address to fee token used for that asset's fee accounting
+    mapping(address => address) public assetFeeToken;
+
+    /// @notice Mapping of asset address to cumulative fee amount paid to stakers
+    mapping(address => uint256) public assetStakerFeesPaid;
+
+    /// @notice Mapping of asset address to cumulative fee amount paid to owner
+    mapping(address => uint256) public assetOwnerFeesPaid;
+
+    /// @notice Mapping of fee token address to cumulative fee amount collected
+    mapping(address => uint256) public feeTokenFeesCollected;
+
+    /// @notice Mapping of fee token address to cumulative fee amount paid to stakers
+    mapping(address => uint256) public feeTokenStakerFeesPaid;
+
+    /// @notice Mapping of fee token address to cumulative fee amount paid to owner
+    mapping(address => uint256) public feeTokenOwnerFeesPaid;
+
+    /// @notice Address of staking contract allowed to collect staker fee share
+    address public stakingContract;
+
+    /// @notice Percentage of protocol fees (in BPS) reserved for stakers
+    uint256 public stakerRewardsBps;
 
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
@@ -63,12 +95,30 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /// @param totalVolume Total cumulative volume for the asset
     event TradeVolumeRecorded(address indexed asset, uint256 tradeSize, uint256 totalVolume);
 
+    /// @notice Emitted when staking contract address is updated
+    event StakingContractUpdated(address indexed oldStakingContract, address indexed newStakingContract);
+
+    /// @notice Emitted when staker rewards BPS is updated
+    event StakerRewardsBpsUpdated(uint256 indexed oldBps, uint256 indexed newBps);
+
+    /// @notice Emitted when staking rewards are collected for a token
+    event StakerRewardsCollected(address indexed token, address indexed stakingContract, uint256 amount);
+
+    /// @notice Emitted when owner fees are transferred for an asset
+    event OwnerFeesCollected(address indexed token, address indexed owner, uint256 amount);
+
     /**
      * @notice Modifier to restrict function access to valid positions only
      * @dev Checks if tge msg.sender is valid stratax position
      */
     modifier onlyValidPosition() {
         require(StrataxPositionNft(strataxPositionNft).strataxAddressToTokenId(msg.sender) != 0, "Invalid position");
+        _;
+    }
+
+    /// @notice Restricts access to the configured staking contract
+    modifier onlyStakingContract() {
+        require(msg.sender == stakingContract, "Only staking contract");
         _;
     }
 
@@ -85,6 +135,7 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(_strataxFee < StrataxCalculations.FLASHLOAN_FEE_PREC, "Fee <= 10,000");
         strataxFee = _strataxFee;
         strataxPositionNft = _strataxPositionNft;
+        stakerRewardsBps = 0;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -109,8 +160,14 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         require(_tradeSize > 0, "Trade size must be greater than zero");
 
         if (_feeAmount > 0) {
-            /// forge-lint: disable-next-line(erc20-unchecked-transfer)
-            IERC20(_feeToken).transferFrom(msg.sender, address(this), _feeAmount);
+            IERC20(_feeToken).safeTransferFrom(msg.sender, address(this), _feeAmount);
+
+            assetFeesCollected[_asset] += _feeAmount;
+            feeTokenFeesCollected[_feeToken] += _feeAmount;
+
+            if (!_trackedFeeTokens.contains(_feeToken)) {
+                _trackedFeeTokens.add(_feeToken);
+            }
         }
 
         // Track the asset if not already tracked
@@ -138,8 +195,7 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
         uint256 balance = IERC20(_token).balanceOf(address(this));
         require(balance > 0, "No fees to withdraw");
-        /// forge-lint: disable-next-line(erc20-unchecked-transfer)
-        IERC20(_token).transfer(msg.sender, balance);
+        IERC20(_token).safeTransfer(msg.sender, balance);
 
         emit FeesWithdrawn(_token, msg.sender, balance);
     }
@@ -167,6 +223,64 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     }
 
     /**
+     * @notice Sets the staking contract address
+     * @dev Only callable by owner
+     */
+    function setStakingContract(address _stakingContract) external onlyOwner {
+        require(_stakingContract != address(0), "Invalid staking address");
+        address oldStakingContract = stakingContract;
+        stakingContract = _stakingContract;
+        emit StakingContractUpdated(oldStakingContract, _stakingContract);
+    }
+
+    /**
+     * @notice Sets the share of protocol fees (in BPS) allocated to stakers
+     * @dev Only callable by owner
+     */
+    function setStakerRewardsBps(uint256 _newBps) external onlyOwner {
+        require(_newBps <= StrataxCalculations.FLASHLOAN_FEE_PREC, "BPS too large");
+        uint256 oldBps = stakerRewardsBps;
+        stakerRewardsBps = _newBps;
+        emit StakerRewardsBpsUpdated(oldBps, _newBps);
+    }
+
+    /**
+     * @notice Distributes pending fees for each tracked fee token between stakers and owner using token-based accounting.
+     * @dev Only callable by staking contract. Uses feeTokenFeesCollected totals, not current contract balances, to compute owed shares.
+     */
+    function collectStakerRewardsForAllAssets() external onlyStakingContract {
+        uint256 length = _trackedFeeTokens.length();
+        require(length > 0, "No tracked fee tokens");
+
+        for (uint256 i = 0; i < length; i++) {
+            address token = _trackedFeeTokens.at(i);
+            uint256 totalCollected = feeTokenFeesCollected[token];
+            if (totalCollected == 0) {
+                continue;
+            }
+
+            uint256 totalStakerEntitlement =
+                (totalCollected * stakerRewardsBps) / StrataxCalculations.FLASHLOAN_FEE_PREC;
+            uint256 totalOwnerEntitlement = totalCollected - totalStakerEntitlement;
+
+            uint256 stakerPending = totalStakerEntitlement - feeTokenStakerFeesPaid[token];
+            uint256 ownerPending = totalOwnerEntitlement - feeTokenOwnerFeesPaid[token];
+
+            if (stakerPending > 0) {
+                IERC20(token).safeTransfer(stakingContract, stakerPending);
+                feeTokenStakerFeesPaid[token] += stakerPending;
+                emit StakerRewardsCollected(token, stakingContract, stakerPending);
+            }
+
+            if (ownerPending > 0) {
+                IERC20(token).safeTransfer(owner(), ownerPending);
+                feeTokenOwnerFeesPaid[token] += ownerPending;
+                emit OwnerFeesCollected(token, owner(), ownerPending);
+            }
+        }
+    }
+
+    /**
      * @notice Withdraws a specific amount of fees for a token
      * @dev Only callable by owner. Allows partial withdrawal of accumulated fees
      * @param _token The ERC20 token address to withdraw
@@ -179,8 +293,7 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
         uint256 balance = IERC20(_token).balanceOf(address(this));
         require(balance >= _amount, "Insufficient balance");
 
-        bool success = IERC20(_token).transfer(msg.sender, _amount);
-        require(success, "Transfer failed");
+        IERC20(_token).safeTransfer(msg.sender, _amount);
 
         emit FeesWithdrawn(_token, msg.sender, _amount);
     }
@@ -214,6 +327,18 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
             assets[i] = _trackedAssets.at(i);
         }
         return assets;
+    }
+
+    /**
+     * @notice Gets all tracked fee tokens
+     * @return tokens An array of fee token addresses that have had fee collection
+     */
+    function getAllTrackedFeeTokens() external view returns (address[] memory tokens) {
+        uint256 length = _trackedFeeTokens.length();
+        tokens = new address[](length);
+        for (uint256 i = 0; i < length; i++) {
+            tokens[i] = _trackedFeeTokens.at(i);
+        }
     }
 
     /**
@@ -255,6 +380,6 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     //////////////////////////////////////////////////////////////*/
 
     /// @notice Storage gap for future upgrades
-    /// @dev Reserves 50 storage slots for adding new state variables in future upgrades without affecting storage layout
-    uint256[49] private __gap;
+    /// @dev Reserves storage slots for adding new state variables in future upgrades without affecting storage layout
+    uint256[37] private __gap;
 }

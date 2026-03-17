@@ -31,17 +31,6 @@ contract StrataxToken is Initializable, ERC20Upgradeable, OwnableUpgradeable, UU
             _mint(owner_, initialSupply);
         }
     }
-
-    /**
-     * @notice Owner-only mint
-     * @param to Recipient address
-     * @param amount Amount to mint
-     */
-    function mint(address to, uint256 amount) external onlyOwner {
-        require(to != address(0), "Invalid recipient");
-        _mint(to, amount);
-    }
-
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     /// @notice Storage gap for future upgrades

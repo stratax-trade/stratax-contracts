@@ -2,9 +2,9 @@
 pragma solidity ^0.8.13;
 
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {ERC20} from "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ERC4626} from "@openzeppelin/contracts/token/ERC20/extensions/ERC4626.sol";
+import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
+import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
 import {Stratax} from "./Stratax.sol";
@@ -18,7 +18,7 @@ import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
  * @dev Users deposit the Stratax collateral token and receive vault shares.
  *      A designated manager controls leverage operations on the underlying Stratax position.
  */
-contract StrataxManagedVault is ERC4626, ReentrancyGuard {
+contract StrataxManagedVault is Initializable, ERC4626Upgradeable, ReentrancyGuard {
     using SafeERC20 for IERC20;
     using Math for uint256;
 
@@ -30,8 +30,8 @@ contract StrataxManagedVault is ERC4626, ReentrancyGuard {
         bool canceled;
     }
 
-    Stratax public immutable stratax;
-    IERC20 public immutable collateralToken;
+    Stratax public stratax;
+    IERC20 public collateralToken;
     address public manager;
     bool public paused;
     bool public deactivated;
@@ -77,17 +77,29 @@ contract StrataxManagedVault is ERC4626, ReentrancyGuard {
         _;
     }
 
-    constructor(address stratax_, address manager_, string memory name_, string memory symbol_)
-        ERC4626(IERC20(Stratax(stratax_).collateralToken()))
-        ERC20(name_, symbol_)
-    {
+    /// @custom:oz-upgrades-unsafe-allow constructor
+    constructor() {
+        _disableInitializers();
+    }
+
+    function initialize(
+        address stratax_,
+        address manager_,
+        string memory name_,
+        string memory symbol_,
+        uint256 initialTargetLeverage_
+    ) external initializer {
         require(stratax_ != address(0), "Invalid Stratax");
         require(manager_ != address(0), "Invalid manager");
+        require(initialTargetLeverage_ >= StrataxCalculations.LEVERAGE_PRECISION, "Target leverage < 1x");
+
+        __ERC20_init(name_, symbol_);
+        __ERC4626_init(IERC20(Stratax(stratax_).collateralToken()));
 
         stratax = Stratax(stratax_);
         collateralToken = IERC20(stratax.collateralToken());
         manager = manager_;
-        targetLeverage = StrataxCalculations.LEVERAGE_PRECISION;
+        targetLeverage = initialTargetLeverage_;
     }
 
     /**
