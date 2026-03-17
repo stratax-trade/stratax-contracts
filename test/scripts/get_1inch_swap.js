@@ -50,9 +50,17 @@ async function get1inchSwapData(
   const url = `${baseUrl}?${params.toString()}`;
 
   return new Promise((resolve, reject) => {
+    const rawApiKey = (process.env.INCH_API_KEY || "").trim();
+    const authHeader = rawApiKey.startsWith("Bearer ")
+      ? rawApiKey
+      : rawApiKey
+        ? `Bearer ${rawApiKey}`
+        : "";
+
     const options = {
       headers: {
-        Authorization: process.env.INCH_API_KEY,
+        ...(authHeader ? { Authorization: authHeader } : {}),
+        Accept: "application/json",
       },
     };
 
@@ -87,7 +95,12 @@ async function get1inchSwapData(
 
             resolve(JSON.stringify(result));
           } catch (error) {
-            resolve(JSON.stringify({ error: error.message }));
+            const snippet = String(data || "").slice(0, 240);
+            resolve(
+              JSON.stringify({
+                error: `Non-JSON 1inch response (status ${res.statusCode}): ${snippet}`,
+              }),
+            );
           }
         });
       })

@@ -147,7 +147,7 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
 
     /// @notice Safety margin for borrow calculations (9900 = 99% of max LTV)
     /// @dev This ensures positions have a healthy buffer and don't immediately risk liquidation
-    uint256 public borrowSafetyMargin; // 99% of max LTV for Aave collateral
+    uint256 public borrowSafetyMargin; // % of max LTV for Aave collateral i.e. 9900 means 99% of max LTV
 
     /// @notice Offset from maximum leverage with 4 decimals (e.g., 75 = 0.75%)
     /// @dev When nearing max leverage, slippage or price fluctuation can cause reverts.
