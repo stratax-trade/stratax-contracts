@@ -58,6 +58,10 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     mapping(address => uint256) public vestedClaimed;
     mapping(address => ManualVestingSchedule[]) private manualVestings;
 
+    /// @notice Storage gap for future upgrades (reserve space for 50 new state variables)
+    /// @dev This prevents storage collisions when adding new state variables in upgrades
+    uint256[50] private __gap;
+
     event StrataxPriceUpdated(uint256 oldPriceUsd, uint256 newPriceUsd);
     event PaymentRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
     event PythUpdated(address indexed oldPyth, address indexed newPyth);
@@ -530,7 +534,4 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     receive() external payable {}
-
-    /// @notice Storage gap for future upgrades.
-    uint256[49] private __gap;
 }

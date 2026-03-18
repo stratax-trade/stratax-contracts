@@ -292,4 +292,77 @@ contract StrataxStakingUnitTest is Test {
             staking.undistributedRewards(address(rewardA)), 0, "undistributed should be cleared after distribution"
         );
     }
+
+    function test_FirstMintOnly_Is1To1Bootstrap() public {
+        vm.prank(alice);
+        uint256 firstShares = staking.deposit(100e18, alice);
+        assertEq(firstShares, 100e18, "first mint should be 1:1");
+        assertTrue(staking.initialMintCompleted(), "initial mint flag should be set");
+
+        // Simulate donated assets increasing vault assets without minting shares.
+        stratax.mint(address(staking), 100e18);
+
+        vm.prank(bob);
+        uint256 secondShares = staking.deposit(100e18, bob);
+        assertLt(secondShares, 100e18, "subsequent mint should use ERC4626 pricing, not forced 1:1");
+    }
+
+    function test_Gas_SyncProtocolRewards_OneTokenVsTwentyTokens() public {
+        address gasUserOne = makeAddr("gasUserOne");
+        address gasUserTwenty = makeAddr("gasUserTwenty");
+
+        // Scenario A: 1 tracked fee token.
+        MockFeeCollector feeCollectorOne = new MockFeeCollector();
+        StrataxStaking stakingOne =
+            new StrataxStaking(address(this), IERC20(address(stratax)), address(feeCollectorOne));
+
+        stratax.mint(gasUserOne, 100e18);
+        vm.prank(gasUserOne);
+        stratax.approve(address(stakingOne), type(uint256).max);
+        vm.prank(gasUserOne);
+        stakingOne.deposit(100e18, gasUserOne);
+
+        MockERC20 rewardSingle = new MockERC20("Gas Reward Single", "GRS", 18);
+        feeCollectorOne.addTrackedToken(address(rewardSingle));
+        rewardSingle.mint(address(feeCollectorOne), 1e18);
+        feeCollectorOne.setPendingReward(address(rewardSingle), 1e18);
+
+        uint256 gasStartOne = gasleft();
+        stakingOne.syncProtocolRewards();
+        uint256 gasUsedOne = gasStartOne - gasleft();
+
+        // Scenario B: 20 tracked fee tokens.
+        MockFeeCollector feeCollectorTwenty = new MockFeeCollector();
+        StrataxStaking stakingTwenty =
+            new StrataxStaking(address(this), IERC20(address(stratax)), address(feeCollectorTwenty));
+
+        stratax.mint(gasUserTwenty, 100e18);
+        vm.prank(gasUserTwenty);
+        stratax.approve(address(stakingTwenty), type(uint256).max);
+        vm.prank(gasUserTwenty);
+        stakingTwenty.deposit(100e18, gasUserTwenty);
+
+        for (uint256 i = 0; i < 20; i++) {
+            MockERC20 rewardToken = new MockERC20("Gas Reward", "GR", 18);
+            feeCollectorTwenty.addTrackedToken(address(rewardToken));
+            rewardToken.mint(address(feeCollectorTwenty), 1e18);
+            feeCollectorTwenty.setPendingReward(address(rewardToken), 1e18);
+        }
+
+        uint256 gasStartTwenty = gasleft();
+        stakingTwenty.syncProtocolRewards();
+        uint256 gasUsedTwenty = gasStartTwenty - gasleft();
+
+        emit log_named_uint("Gas used syncProtocolRewards (1 token)", gasUsedOne);
+        emit log_named_uint("Gas used syncProtocolRewards (20 tokens)", gasUsedTwenty);
+        emit log_named_uint("Gas delta (20 - 1)", gasUsedTwenty - gasUsedOne);
+
+        /* GAS COSTS
+        Gas used syncProtocolRewards (1 token): 123289
+        Gas used syncProtocolRewards (20 tokens): 1983209
+        Gas delta (20 - 1): 1859920
+        */
+
+        assertGt(gasUsedTwenty, gasUsedOne, "Expected 20-token sync to cost more gas than 1-token sync");
+    }
 }

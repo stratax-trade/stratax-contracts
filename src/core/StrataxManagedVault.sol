@@ -44,6 +44,10 @@ contract StrataxManagedVault is Initializable, ERC4626Upgradeable, ReentrancyGua
     uint256 public totalPendingWithdrawals;
     mapping(uint256 => WithdrawalRequest) public withdrawalRequests;
 
+    /// @notice Storage gap for future upgrades (reserve space for 50 new state variables)
+    /// @dev This prevents storage collisions when adding new state variables in upgrades
+    uint256[50] private __gap;
+
     event ManagerUpdated(address indexed oldManager, address indexed newManager);
     event TargetLeverageUpdated(uint256 oldTargetLeverage, uint256 newTargetLeverage);
     event Deposited(address indexed caller, address indexed receiver, uint256 assets, uint256 shares);

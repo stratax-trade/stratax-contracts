@@ -381,5 +381,5 @@ contract FeeCollector is Initializable, OwnableUpgradeable, UUPSUpgradeable {
 
     /// @notice Storage gap for future upgrades
     /// @dev Reserves storage slots for adding new state variables in future upgrades without affecting storage layout
-    uint256[37] private __gap;
+    uint256[50] private __gap;
 }

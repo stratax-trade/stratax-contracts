@@ -13,6 +13,10 @@ contract StrataxOracle is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     /// @notice Maximum age of price data in seconds
     uint256 public maxPriceAge;
 
+    /// @notice Storage gap for future upgrades (reserve space for 50 new state variables)
+    /// @dev This prevents storage collisions when adding new state variables in upgrades
+    uint256[50] private __gap;
+
     /// @notice Emitted when a price feed is updated for a token
     event PriceFeedUpdated(address indexed token, address indexed priceFeed);
 

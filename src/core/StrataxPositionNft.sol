@@ -117,7 +117,7 @@ contract StrataxPositionNft is
     string private _baseTokenUri;
 
     /// @notice Storage gap for future upgrades
-    uint256[49] private __gap;
+    uint256[50] private __gap;
 
     /*//////////////////////////////////////////////////////////////
                                 EVENTS
