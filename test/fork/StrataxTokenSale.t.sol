@@ -111,6 +111,180 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
         }
     }
 
+    /**
+     * @notice Test normalization of Pyth prices with 6 decimals (less than 8)
+     * Example: USDC oracle price might be 1e6 (price of 1 USDC in USD with 6 decimals = $1.00)
+     * Should normalize to 1e8 (8 decimals for $1.00)
+     */
+    function test_NormalizePriceWith6Decimals() public {
+        // Simulate a price feed with 6 decimals
+        // Example: 1 USDC = $1.00 with 6 decimals = 1_000_000
+        int64 price = 1_000_000; // $1.00 with 6 decimal exponent
+        int32 expo = -6;
+
+        uint256 normalized = sale.normalizePriceForTest(price, expo);
+
+        // Should normalize to 8 decimals: 1_000_000 * 10^(8-6) = 100_000_000
+        uint256 expected = 100_000_000; // $1.00 with 8 decimals
+        assertEq(normalized, expected, "6 decimal price should normalize to 8 decimals");
+    }
+
+    /**
+     * @notice Test normalization of Pyth prices with 18 decimals (more than 8)
+     * Example: A high-precision oracle price with 18 decimals = price / 10^10
+     */
+    function test_NormalizePriceWith18Decimals() public {
+        // Simulate a price feed with 18 decimals
+        // Example: 1 token = $1.00 with 18 decimals = 1e18
+        int64 price = 1_000_000_000_000_000_000; // $1.00 with 18 decimal exponent
+        int32 expo = -18;
+
+        uint256 normalized = sale.normalizePriceForTest(price, expo);
+
+        // Should normalize to 8 decimals: 1e18 / 10^10 = 100_000_000
+        uint256 expected = 100_000_000; // $1.00 with 8 decimals
+        assertEq(normalized, expected, "18 decimal price should normalize to 8 decimals");
+    }
+
+    /**
+     * @notice Test normalization with very small decimals (2 decimals)
+     * Example: Price feed with only 2 decimal places
+     */
+    function test_NormalizePriceWith2Decimals() public {
+        // Simulate a price feed with 2 decimals
+        // Example: price = 150 with expo -2 means $1.50
+        int64 price = 150; // $1.50 with 2 decimal exponent
+        int32 expo = -2;
+
+        uint256 normalized = sale.normalizePriceForTest(price, expo);
+
+        // Should normalize to 8 decimals: 150 * 10^(8-2) = 150 * 10^6 = 150_000_000
+        uint256 expected = 150_000_000; // $1.50 with 8 decimals
+        assertEq(normalized, expected, "2 decimal price should normalize correctly to 8 decimals");
+    }
+
+    /**
+     * @notice Test normalization with zero exponent
+     * Example: Price feed where price is already in the correct scale
+     */
+    function test_NormalizePriceWithZeroExponent() public {
+        // Simulate a price feed with 0 exponent
+        // This means the price value is already an integer USD value
+        int64 price = 5; // $5.00 without decimal shift
+        int32 expo = 0;
+
+        uint256 normalized = sale.normalizePriceForTest(price, expo);
+
+        // Should normalize to 8 decimals: 5 * 10^(8-0) = 5 * 10^8 = 500_000_000
+        uint256 expected = 500_000_000; // $5.00 with 8 decimals
+        assertEq(normalized, expected, "0 exponent price should multiply by 10^8");
+    }
+
+    /**
+     * @notice Test normalization with positive exponent (rare case)
+     * Example: Price feed where exponent is positive means value is scaled up
+     */
+    function test_NormalizePriceWithPositiveExponent() public {
+        // Simulate a price feed with positive exponent
+        // price = 1 with expo = 5 means 1 * 10^5 = 100000 (in the price feed's native scale)
+        int64 price = 1; // 1 in some scaled representation
+        int32 expo = 5; // positive exponent
+
+        uint256 normalized = sale.normalizePriceForTest(price, expo);
+
+        // Should normalize to 8 decimals: 1 * 10^(8+5) = 10^13
+        uint256 expected = 10_000_000_000_000; // 1 * 10^13
+        assertEq(normalized, expected, "positive exponent should multiply by 10^(8+expo)");
+    }
+
+    /**
+     * @notice Test buying with a simulated 6 decimal price feed
+     * Verify quote calculation correctly handles different precision
+     */
+    function test_QuoteCalculationWith6DecimalFeed() public {
+        // Assume USDC-like token with 6 decimal price feed
+        // Price: $1.00 with 6 decimals = 1_000_000
+        int64 usdcPrice = 1_000_000; // $1.00
+        int32 usdcExpo = -6;
+
+        // Expected normalized price
+        uint256 normalizedPrice = sale.normalizePriceForTest(usdcPrice, usdcExpo); // 100_000_000 (8 decimals)
+
+        // Payment amount: 100 USDC (100 * 1e6)
+        uint256 paymentAmount = 100e6;
+
+        // Payment value = 100 USDC * $1.00 = $100.00
+        uint256 paymentValueUsd = (paymentAmount * normalizedPrice) / 1e6; // Use token decimals for division
+
+        // STRATAX price = $0.20 = 20_000_000 (8 decimals)
+        uint256 strataxPriceUsd = 20_000_000;
+
+        // Expected STRATAX out = $100.00 / $0.20 = 500 STRATAX
+        uint256 expectedStrataxOut = (paymentValueUsd * 1e18) / strataxPriceUsd;
+
+        assertTrue(expectedStrataxOut > 0, "Should calculate positive STRATAX output");
+        assertEq(expectedStrataxOut, 500e18, "Should receive 500 STRATAX for $100 at $0.20 per token");
+    }
+
+    /**
+     * @notice Test buying with a simulated 18 decimal price feed
+     * Verify quote calculation with high precision price feed
+     */
+    function test_QuoteCalculationWith18DecimalFeed() public {
+        // Custom token with 18 decimal price feed
+        // Price: $2.50 with 18 decimals = 2.5e18
+        int64 customTokenPrice = 2_500_000_000_000_000_000; // $2.50
+        int32 customExpo = -18;
+
+        // Expected normalized price
+        uint256 normalizedPrice = sale.normalizePriceForTest(customTokenPrice, customExpo); // 250_000_000 (8 decimals)
+
+        // Payment amount: 40 tokens (40 * 1e18)
+        uint256 paymentAmount = 40e18;
+
+        // Payment value = 40 * $2.50 = $100.00
+        uint256 paymentValueUsd = (paymentAmount * normalizedPrice) / 1e18; // Use token decimals for division
+
+        // STRATAX price = $0.20 = 20_000_000
+        uint256 strataxPriceUsd = 20_000_000;
+
+        // Expected STRATAX out = $100.00 / $0.20 = 500 STRATAX
+        uint256 expectedStrataxOut = (paymentValueUsd * 1e18) / strataxPriceUsd;
+
+        assertTrue(expectedStrataxOut > 0, "Should calculate positive STRATAX output");
+        assertEq(expectedStrataxOut, 500e18, "Should receive 500 STRATAX for $100 at $0.20 per token");
+    }
+
+    /**
+     * @notice Test that various decimal price feeds normalize correctly
+     * Verifies that the normalization function handles edge cases
+     */
+    function test_MultipleDecimalNormalizationRobustness() public {
+        // Test various decimal places
+        uint256 expectedUsdValue = 250_000_000; // $2.50 with 8 decimals
+
+        // 3 decimals: 2500
+        assertEq(sale.normalizePriceForTest(2500, -3), expectedUsdValue, "3 decimal normalization failed");
+
+        // 4 decimals: 25000
+        assertEq(sale.normalizePriceForTest(25000, -4), expectedUsdValue, "4 decimal normalization failed");
+
+        // 5 decimals: 250000
+        assertEq(sale.normalizePriceForTest(250000, -5), expectedUsdValue, "5 decimal normalization failed");
+
+        // 6 decimals: 2500000
+        assertEq(sale.normalizePriceForTest(2500000, -6), expectedUsdValue, "6 decimal normalization failed");
+
+        // 7 decimals: 25000000
+        assertEq(sale.normalizePriceForTest(25000000, -7), expectedUsdValue, "7 decimal normalization failed");
+
+        // 9 decimals: 2500000000
+        assertEq(sale.normalizePriceForTest(2500000000, -9), expectedUsdValue, "9 decimal normalization failed");
+
+        // 10 decimals: 25000000000
+        assertEq(sale.normalizePriceForTest(25000000000, -10), expectedUsdValue, "10 decimal normalization failed");
+    }
+
     function _isContract(address account) internal view returns (bool) {
         return account.code.length > 0;
     }

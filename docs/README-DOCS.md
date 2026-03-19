@@ -53,11 +53,18 @@ docs/
 ├── architecture/          # System architecture docs
 │   ├── overview.md
 │   ├── leverage-mechanics.md
-│   └── flashloan-flow.md
+│   ├── flashloan-flow.md
+│   └── staking-fees-managed-vaults.md
 ├── contracts/             # Contract documentation
-│   └── stratax.md
+│   ├── stratax.md
+│   ├── stratax-token-sale.md
+│   ├── stratax-staking.md
+│   └── stratax-managed-vault.md
 ├── guides/                # User guides
-│   └── opening-position.md
+│   ├── opening-position.md
+│   ├── token-sale.md
+│   ├── staking-rewards.md
+│   └── managed-vault.md
 ├── deployment/            # Deployment & ops
 │   ├── deployment-guide.md
 │   └── configuration.md
@@ -121,14 +128,16 @@ Detailed API documentation for each contract:
 - State variables
 - Usage examples
 
+Includes documentation for leveraged positions, token sale, staking, and managed vault contracts.
+
 ### Guides
 
 Step-by-step tutorials for end users:
 
 - Opening positions
-- Managing positions
-- Closing positions
-- Understanding risks
+- Buying in token sale rounds
+- Staking and claiming rewards
+- Participating in managed vault strategies
 
 ### Deployment
 

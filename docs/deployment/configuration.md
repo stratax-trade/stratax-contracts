@@ -252,6 +252,71 @@ const slippageDefaults = {
 };
 ```
 
+## Token Sale Configuration
+
+Configure token sale payment assets and pricing:
+
+```solidity
+StrataxTokenSale sale = StrataxTokenSale(TOKEN_SALE_ADDRESS);
+
+// Price in USD with 8 decimals (example: $0.20)
+sale.setStrataxPriceUsd(20_000_000);
+
+// Whitelist payment tokens with Pyth feed IDs
+sale.whitelistPaymentToken(WETH, PYTH_ETH_USD_ID, 7 days);
+sale.whitelistPaymentToken(USDC, PYTH_USDC_USD_ID, 7 days);
+```
+
+Notes:
+
+- Pyth exponents can vary by feed; sale normalizes all prices to 8 decimals.
+- Use conservative max price age values for your operational risk profile.
+
+## Staking and Fee Split Configuration
+
+Wire `FeeCollector` and `StrataxStaking` after deployment:
+
+```solidity
+FeeCollector feeCollector = FeeCollector(FEE_COLLECTOR_ADDRESS);
+StrataxStaking staking = StrataxStaking(STAKING_ADDRESS);
+
+// Allow staking contract to pull staker-side rewards
+feeCollector.setStakingContract(address(staking));
+
+// Example: 70% of protocol fees to stakers
+feeCollector.setStakerRewardsBps(7000);
+
+// Optional STRATAX emissions
+staking.setStrataxEmissionRatePerSecond(EMISSION_RATE);
+staking.fundStrataxEmissions(EMISSION_RESERVE);
+```
+
+Operational recommendation:
+
+- Set and monitor `stakerRewardsBps` with governance/multisig controls.
+
+## Managed Vault Configuration
+
+Deploy and initialize managed vaults through the deployer:
+
+```solidity
+StrataxManagedVaultDeployer deployer = StrataxManagedVaultDeployer(DEPLOYER_ADDRESS);
+
+address vault = deployer.deployVault(
+    STRATAX_POSITION_PROXY,
+    MANAGER_ADDRESS,
+    "Managed ETH Vault",
+    "mvETH",
+    30000 // 3x target leverage
+);
+```
+
+Manager runbook:
+
+- Set target leverage according to strategy constraints.
+- Use pause/deactivate controls as emergency response tools.
+- Process FIFO withdrawal queue periodically when idle collateral is available.
+
 ## Testing Configuration
 
 ### Testnet Setup

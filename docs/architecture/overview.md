@@ -162,6 +162,6 @@ graph TD
 
 ## Next Steps
 
-- [Contract Interactions](interactions.md) - Detailed interaction flows
 - [Leverage Mechanics](leverage-mechanics.md) - How leverage works
 - [Flash Loan Flow](flashloan-flow.md) - Flash loan execution details
+- [Staking, Fees, and Managed Vaults](staking-fees-managed-vaults.md) - Extended protocol architecture

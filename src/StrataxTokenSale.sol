@@ -531,6 +531,17 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         require(normalizedPrice > 0, "Normalized price is zero");
     }
 
+    /**
+     * @notice Public helper function for testing price normalization with different decimal precisions.
+     * @dev This function exposes the internal normalization logic for unit testing purposes.
+     * @param price The price value from Pyth
+     * @param expo The exponent from Pyth price feed
+     * @return normalizedPrice The price normalized to 8 decimals (USD)
+     */
+    function normalizePriceForTest(int64 price, int32 expo) external pure returns (uint256) {
+        return _normalizePythPriceToUsdE8(price, expo);
+    }
+
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}
 
     receive() external payable {}
