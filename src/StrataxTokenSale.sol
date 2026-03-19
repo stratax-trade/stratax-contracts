@@ -86,6 +86,7 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         uint64 duration
     );
     event ManualVestingTokensClaimed(address indexed beneficiary, uint256 amount);
+    event ProceedsWithdrawn(address indexed token, address indexed to, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -215,6 +216,22 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         require(paymentTokenConfigs[token].isWhitelisted, "Token not whitelisted");
         delete paymentTokenConfigs[token];
         emit PaymentTokenRemoved(token);
+    }
+
+    /**
+     * @notice Owner withdraws any ERC20 token accidentally sent to this contract, except STRATAX.
+     * @param token ERC20 token to withdraw.
+     * @param to Recipient of the withdrawn tokens.
+     * @param amount Amount to withdraw.
+     */
+    function withdrawProceeds(address token, address to, uint256 amount) external onlyOwner {
+        require(token != address(0), "Invalid token");
+        require(token != strataxToken, "Cannot withdraw STRATAX");
+        require(to != address(0), "Invalid recipient");
+        require(amount > 0, "Invalid amount");
+
+        IERC20(token).safeTransfer(to, amount);
+        emit ProceedsWithdrawn(token, to, amount);
     }
 
     /**

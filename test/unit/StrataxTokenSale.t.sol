@@ -224,4 +224,23 @@ contract StrataxTokenSaleUnitTest is Test {
 
         assertEq(stratax.balanceOf(buyer), buyerBalanceBefore + claimable);
     }
+
+    function test_OwnerCanWithdrawForeignToken() public {
+        MockERC20 dai = new MockERC20("Dai Stablecoin", "DAI", 18);
+        dai.mint(address(sale), 250e18);
+
+        uint256 ownerBefore = dai.balanceOf(owner);
+
+        vm.prank(owner);
+        sale.withdrawProceeds(address(dai), owner, 100e18);
+
+        assertEq(dai.balanceOf(owner), ownerBefore + 100e18);
+        assertEq(dai.balanceOf(address(sale)), 150e18);
+    }
+
+    function test_WithdrawForeignTokenRevertsForStrataxToken() public {
+        vm.prank(owner);
+        vm.expectRevert("Cannot withdraw STRATAX");
+        sale.withdrawProceeds(address(stratax), owner, 1e18);
+    }
 }
