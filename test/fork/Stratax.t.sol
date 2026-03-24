@@ -219,7 +219,7 @@ contract StrataxForkTest is StrataxForkTestBase {
         console.log("Expected return amount from swap:", expectedReturnAmount);
 
         // Build direct adapter payload so mint+open does not re-run on-chain open param calculation.
-        (bytes memory mintCallData, bytes memory initTradeParams) = AaveOneInchPositionAdapter(adapter)
+        (bytes memory mintCallData,) = AaveOneInchPositionAdapter(adapter)
             .buildCreateLeveragedPositionCallData(
                 newPositionOwner,
                 collateralToken,
@@ -233,8 +233,6 @@ contract StrataxForkTest is StrataxForkTestBase {
                 swapData
             );
 
-        mintCallData;
-
         // Give the new owner the collateral
         deal(collateralToken, newPositionOwner, collateralAmount);
 
@@ -242,15 +240,14 @@ contract StrataxForkTest is StrataxForkTestBase {
         vm.startPrank(newPositionOwner);
         IERC20(collateralToken).approve(address(strataxPositionNft), collateralAmount);
 
-        (uint256 mintedTokenId, address deployedStrataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            newPositionOwner,
-            collateralToken,
-            borrowToken,
-            LENDING_AAVE_V3_ID,
-            SWAP_ONEINCH_V6_ID,
-            true,
-            initTradeParams
-        );
+        (bool mintSuccess, bytes memory mintResult) = address(strataxPositionNft).call(mintCallData);
+        if (!mintSuccess) {
+            assembly {
+                revert(add(mintResult, 0x20), mload(mintResult))
+            }
+        }
+
+        (uint256 mintedTokenId, address deployedStrataxProxy) = abi.decode(mintResult, (uint256, address));
 
         vm.stopPrank();
 

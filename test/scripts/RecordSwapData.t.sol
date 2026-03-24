@@ -10,8 +10,8 @@ import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
-import {StrataxAaveLib} from "../../src/libraries/lending/StrataxAaveLib.sol";
-import {Stratax1InchLib} from "../../src/libraries/swapping/Stratax1InchLib.sol";
+import {StrataxAavePositionInitConstants} from "../../src/libraries/constants/StrataxAavePositionInitConstants.sol";
+import {Stratax1InchConstants} from "../../src/libraries/constants/Stratax1InchConstants.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
@@ -104,19 +104,13 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
             lendingProtocolId, swapProtocolId, address(strataxBeacon), address(adapter)
         );
 
-        StrataxAaveLib.InitParams memory lendingConfig = StrataxAaveLib.InitParams({
-            pool: AAVE_POOL,
-            dataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            flashLoanFeeBps: IPool(AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL(),
-            defaultBorrowSafetyMargin: 9950,
-            defaultMaxLeverageOffset: 75
-        });
-        Stratax1InchLib.Config memory swapConfig = Stratax1InchLib.Config({router: INCH_ROUTER});
+        bytes memory lendingData = abi.encode(
+            StrataxAavePositionInitConstants.ethereumConfigParams(IPool(AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL())
+        );
+        bytes memory swapData = abi.encode(Stratax1InchConstants.ethereumConfigParams());
 
         vm.prank(admin);
-        strataxConfigManager.setPlatformConfig(
-            lendingProtocolId, swapProtocolId, abi.encode(lendingConfig), abi.encode(swapConfig)
-        );
+        strataxConfigManager.setPlatformConfig(lendingProtocolId, swapProtocolId, lendingData, swapData);
 
         // Mint position NFT which deploys Stratax proxy
         StrataxPositionNft.MintPositionParams memory emptyParams;

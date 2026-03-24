@@ -9,8 +9,8 @@ import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
-import {StrataxAaveLib} from "../../src/libraries/lending/StrataxAaveLib.sol";
-import {Stratax1InchLib} from "../../src/libraries/swapping/Stratax1InchLib.sol";
+import {StrataxAavePositionInitConstants} from "../../src/libraries/constants/StrataxAavePositionInitConstants.sol";
+import {Stratax1InchConstants} from "../../src/libraries/constants/Stratax1InchConstants.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -337,17 +337,10 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(nft));
         manager.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, address(adapter));
 
-        StrataxAaveLib.InitParams memory lendingConfig = StrataxAaveLib.InitParams({
-            pool: AAVE_POOL,
-            dataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-            flashLoanFeeBps: flashLoanFeeBps_,
-            defaultBorrowSafetyMargin: 9950,
-            defaultMaxLeverageOffset: 75
-        });
+        bytes memory lendingData = abi.encode(StrataxAavePositionInitConstants.ethereumConfigParams(flashLoanFeeBps_));
+        bytes memory swapData = abi.encode(Stratax1InchConstants.ethereumConfigParams());
 
-        Stratax1InchLib.Config memory swapConfig = Stratax1InchLib.Config({router: INCH_ROUTER});
-
-        manager.setPlatformConfig(lendingProtocolId, swapProtocolId, abi.encode(lendingConfig), abi.encode(swapConfig));
+        manager.setPlatformConfig(lendingProtocolId, swapProtocolId, lendingData, swapData);
         vm.stopPrank();
     }
 }

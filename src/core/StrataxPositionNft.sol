@@ -18,7 +18,6 @@ import {Stratax_Aave_1Inch as Stratax} from "./position-types/Stratax_Aave_1Inch
 import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
 import {IStrataxPositionAdapter} from "../interfaces/internal/IStrataxPositionAdapter.sol";
 import {StrataxAaveLib} from "../libraries/lending/StrataxAaveLib.sol";
-import {Stratax1InchLib} from "../libraries/swapping/Stratax1InchLib.sol";
 
 contract StrataxPositionNft is
     Initializable,
@@ -412,46 +411,6 @@ contract StrataxPositionNft is
     }
 
     /**
-     * @notice Convenience mint flow for the Aave + 1inch protocol-id pair.
-     */
-    function mintPositionAave1Inch(
-        address to,
-        address collateralToken,
-        address borrowToken,
-        bool _openInitPosition,
-        bytes calldata _initParams
-    ) external returns (uint256 tokenId, address strataxProxy) {
-        return mintPositionByProtocolIds(
-            to,
-            collateralToken,
-            borrowToken,
-            keccak256("LENDING:AAVE_V3"),
-            keccak256("SWAP:ONEINCH_V6"),
-            _openInitPosition,
-            _initParams
-        );
-    }
-
-    // Deprecated compatibility overload: converts old struct params to adapter-encoded bytes.
-    function mintPositionAave1Inch(
-        address to,
-        address collateralToken,
-        address borrowToken,
-        bool _openInitPosition,
-        MintPositionParams memory _initParams
-    ) external returns (uint256 tokenId, address strataxProxy) {
-        return mintPositionByProtocolIds(
-            to,
-            collateralToken,
-            borrowToken,
-            keccak256("LENDING:AAVE_V3"),
-            keccak256("SWAP:ONEINCH_V6"),
-            _openInitPosition,
-            _initParams
-        );
-    }
-
-    /**
      * @notice Burns a position NFT
      * @dev Can only be called by the position's Stratax proxy contract
      * @param tokenId The ID of the position
@@ -569,17 +528,7 @@ contract StrataxPositionNft is
         view
         returns (uint256[] memory tokenIds, Position[] memory positionList)
     {
-        uint256 balance = balanceOf(owner);
-        tokenIds = new uint256[](balance);
-        positionList = new Position[](balance);
-
-        for (uint256 i = 0; i < balance; i++) {
-            uint256 tokenId = tokenOfOwnerByIndex(owner, i);
-            tokenIds[i] = tokenId;
-            positionList[i] = positions[tokenId];
-        }
-
-        return (tokenIds, positionList);
+        return getPositionsByOwner(owner, 0, balanceOf(owner));
     }
 
     /**
