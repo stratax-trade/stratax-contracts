@@ -2,13 +2,20 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Stratax} from "../src/core/Stratax.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxOracle} from "../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../src/core/FeeCollector.sol";
 import {StrataxPositionNft} from "../src/core/StrataxPositionNft.sol";
+import {StrataxConfigManager} from "../src/core/StrataxConfigManager.sol";
+import {StrataxProtocolBeacon} from "../src/core/StrataxProtocolBeacon.sol";
+import {AaveOneInchPositionAdapter} from "../src/core/adapters/AaveOneInchPositionAdapter.sol";
+import {StrataxAaveLib} from "../src/libraries/lending/StrataxAaveLib.sol";
+import {Stratax1InchLib} from "../src/libraries/swapping/Stratax1InchLib.sol";
+import {StrataxAavePositionInitConstants} from "../src/libraries/constants/StrataxAavePositionInitConstants.sol";
+import {Stratax1InchConstants} from "../src/libraries/constants/Stratax1InchConstants.sol";
 import {ConstantsEtMainnet} from "../test/Constants.sol";
-import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
+import {IPool} from "../src/interfaces/external/IPool.sol";
 
 /**
  * @title DeployStrataxSystem
@@ -20,6 +27,9 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
  *      4. Stratax implementation with UpgradeableBeacon
  */
 contract DeployStrataxSystem is Script, ConstantsEtMainnet {
+    bytes32 internal constant LENDING_AAVE_V3_ID = keccak256("LENDING:AAVE_V3");
+    bytes32 internal constant SWAP_ONEINCH_V6_ID = keccak256("SWAP:ONEINCH_V6");
+
     // Default configuration values
     uint256 public constant DEFAULT_STRATAX_FEE = 50; // 0.5% (50/10000)
     uint256 public constant DEFAULT_BORROW_SAFETY_MARGIN = 9900; // 99%
@@ -29,6 +39,7 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         address strataxOracleProxy;
         address feeCollectorProxy;
         address strataxPositionNftProxy;
+        address configManager;
         address strataxBeacon;
         address strataxImplementation;
     }
@@ -84,6 +95,13 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         console.log("\n4. Deploying StrataxPositionNft...");
         deployed.strataxPositionNftProxy = deployStrataxPositionNft(
             deployer, deployed.strataxBeacon, deployed.strataxOracleProxy, deployed.feeCollectorProxy
+        );
+
+        // 5. Deploy StrataxConfigManager and hand over NFT config ownership
+        console.log("\n5. Deploying StrataxConfigManager...");
+        deployed.configManager = deployConfigManager(deployer, deployed.strataxPositionNftProxy);
+        configureDefaultAaveOneInchPath(
+            deployed.strataxPositionNftProxy, deployed.configManager, deployed.strataxBeacon
         );
 
         vm.stopBroadcast();
@@ -160,7 +178,8 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         console.log("  - Stratax Implementation:", implementation);
 
         // Deploy beacon
-        UpgradeableBeacon strataxBeacon = new UpgradeableBeacon(implementation, owner);
+        StrataxProtocolBeacon strataxBeacon =
+            new StrataxProtocolBeacon(implementation, owner, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         beacon = address(strataxBeacon);
         console.log("  - Stratax Beacon:", beacon);
     }
@@ -177,6 +196,9 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         internal
         returns (address proxy)
     {
+        // Configuration through StrataxConfigManager uses the beacon after deployment.
+        strataxBeacon;
+
         // Deploy implementation
         StrataxPositionNft implementation = new StrataxPositionNft();
         console.log("  - StrataxPositionNft Implementation:", address(implementation));
@@ -184,12 +206,9 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         // Create initialization params
         StrataxPositionNft.StrataxPositionNftInitParams memory initParams =
             StrataxPositionNft.StrataxPositionNftInitParams({
-                strataxBeacon: strataxBeacon,
-                aavePool: AAVE_POOL,
-                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-                oneInchRouter: INCH_ROUTER,
                 strataxOracle: strataxOracle,
                 feeCollector: feeCollector,
+                configManager: address(this),
                 owner: owner,
                 uri: DEFAULT_NFT_URI
             });
@@ -204,6 +223,40 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         console.log("  - Base URI:", DEFAULT_NFT_URI);
     }
 
+    function deployConfigManager(address owner, address positionNft) internal returns (address manager) {
+        StrataxConfigManager implementation = new StrataxConfigManager();
+        bytes memory initData = abi.encodeWithSelector(StrataxConfigManager.initialize.selector, owner, positionNft);
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
+        manager = address(proxy);
+        console.log("  - StrataxConfigManager:", manager);
+    }
+
+    function configureDefaultAaveOneInchPath(
+        address positionNftAddress,
+        address configManagerAddress,
+        address strataxBeacon
+    ) internal {
+        StrataxPositionNft positionNft = StrataxPositionNft(positionNftAddress);
+        StrataxConfigManager configManager = StrataxConfigManager(configManagerAddress);
+
+        positionNft.setConfigManager(configManagerAddress);
+
+        bytes32 lendingProtocolId = LENDING_AAVE_V3_ID;
+        bytes32 swapProtocolId = SWAP_ONEINCH_V6_ID;
+
+        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(positionNftAddress);
+        configManager.setProtocolPairConfig(lendingProtocolId, swapProtocolId, strataxBeacon, address(adapter));
+
+        StrataxAaveLib.InitParams memory lendingDefaults = StrataxAavePositionInitConstants.ethereumConfigParams(
+            IPool(StrataxAavePositionInitConstants.ETHEREUM_AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL()
+        );
+        Stratax1InchLib.Config memory swapDefaults = Stratax1InchConstants.ethereumConfigParams();
+
+        bytes memory lendingData = abi.encode(lendingDefaults);
+        bytes memory swapData = abi.encode(swapDefaults);
+        configManager.setPlatformConfig(lendingProtocolId, swapProtocolId, lendingData, swapData);
+    }
+
     /**
      * @notice Logs a summary of all deployed contracts
      * @param deployed Struct containing all deployed contract addresses
@@ -213,6 +266,7 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         console.log("StrataxOracle (UUPS):", deployed.strataxOracleProxy);
         console.log("FeeCollector (UUPS):", deployed.feeCollectorProxy);
         console.log("StrataxPositionNft (UUPS):", deployed.strataxPositionNftProxy);
+        console.log("StrataxConfigManager:", deployed.configManager);
         console.log("Stratax Beacon:", deployed.strataxBeacon);
         console.log("Stratax Implementation:", deployed.strataxImplementation);
         console.log("\n=== Key Integrations ===");

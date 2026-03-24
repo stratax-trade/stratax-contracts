@@ -145,7 +145,7 @@ Users
 - `StrataxStaking.sol` - ERC4626 STRATAX staking vault with multi-token reward accounting
 - `FeeCollector.sol` - Protocol fee collection and owner/staker fee split distribution
 - `StrataxManagedVault.sol` - Manager-operated ERC4626 vault for one leveraged Stratax position
-- `StrataxManagedVaultDeployer.sol` - Beacon deployer for managed vaults and one-call position+vault deploys
+- `StrataxDeployer_Aave_1Inch.sol` - Aave + 1inch deployer for managed vaults and one-call position+vault deploys
 - `StrataxOracle.sol` - Chainlink price feed aggregator (for position pricing)
 - `StrataxCalculations.sol` - Pure calculation library
 

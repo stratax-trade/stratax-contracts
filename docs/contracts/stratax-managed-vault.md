@@ -48,7 +48,7 @@ When immediate idle collateral is insufficient, users can request queued withdra
 
 ## Deployment
 
-Use `StrataxManagedVaultDeployer` for beacon-proxy deployment:
+Use `StrataxDeployer_Aave_1Inch` for Aave + 1inch beacon-proxy deployment:
 
 - `deployVault(...)` for existing Stratax position
 - `mintPositionAndDeployVault(...)` to mint position and vault in one transaction

@@ -43,7 +43,10 @@ async function get1inchSwapData(
     amount: amount,
     from: fromAddress,
     slippage: "1", // 1% slippage
+    // For future CREATE2 addresses we cannot satisfy balance simulations ahead of deployment.
+    // disableEstimate + ignoreChecks returns executable calldata without from-address balance gating.
     disableEstimate: "true",
+    ignoreChecks: "true",
     allowPartialFill: "false",
   });
 

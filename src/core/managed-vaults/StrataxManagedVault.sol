@@ -7,10 +7,10 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {ERC4626Upgradeable} from "@openzeppelin/contracts-upgradeable/token/ERC20/extensions/ERC4626Upgradeable.sol";
 import {ReentrancyGuard} from "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import {Math} from "@openzeppelin/contracts/utils/math/Math.sol";
-import {Stratax} from "./Stratax.sol";
-import {IFeeCollector} from "../interfaces/internal/IFeeCollector.sol";
-import {IStrataxOracle} from "../interfaces/internal/IStrataxOracle.sol";
-import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../position-types/Stratax_Aave_1Inch.sol";
+import {IFeeCollector} from "../../interfaces/internal/IFeeCollector.sol";
+import {IStrataxOracle} from "../../interfaces/internal/IStrataxOracle.sol";
+import {StrataxCalculations} from "../../libraries/StrataxCalculations.sol";
 
 /**
  * @title StrataxManagedVault

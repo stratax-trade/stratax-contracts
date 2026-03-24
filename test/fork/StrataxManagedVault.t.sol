@@ -2,14 +2,14 @@
 pragma solidity ^0.8.13;
 
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-import {Stratax} from "../../src/core/Stratax.sol";
-import {StrataxManagedVault} from "../../src/core/StrataxManagedVault.sol";
-import {StrataxManagedVaultDeployer} from "../../src/core/StrataxManagedVaultDeployer.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../../src/core/position-types/Stratax_Aave_1Inch.sol";
+import {StrataxManagedVault} from "../../src/core/managed-vaults/StrataxManagedVault.sol";
 import {IFeeCollector} from "../../src/interfaces/internal/IFeeCollector.sol";
 import {IStrataxOracle} from "../../src/interfaces/internal/IStrataxOracle.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {StrataxCalculations} from "../../src/libraries/StrataxCalculations.sol";
 import {StrataxForkTestBase} from "./Base.t.sol";
+import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
 
 /**
  * @title StrataxManagedVaultForkTest
@@ -18,7 +18,6 @@ import {StrataxForkTestBase} from "./Base.t.sol";
  */
 contract StrataxManagedVaultForkTest is StrataxForkTestBase {
     StrataxManagedVault public vault;
-    StrataxManagedVaultDeployer public vaultDeployer;
 
     address public manager;
     address public investor;
@@ -31,11 +30,17 @@ contract StrataxManagedVaultForkTest is StrataxForkTestBase {
         manager = makeAddr("manager");
         investor = makeAddr("investor");
 
-        vaultDeployer = new StrataxManagedVaultDeployer(address(this));
-        address vaultProxy = vaultDeployer.deployVault(
-            address(stratax), manager, "Stratax Managed Vault USDC", "smvUSDC", StrataxCalculations.LEVERAGE_PRECISION
+        StrataxManagedVault implementation = new StrataxManagedVault();
+        bytes memory initData = abi.encodeWithSelector(
+            StrataxManagedVault.initialize.selector,
+            address(stratax),
+            manager,
+            "Stratax Managed Vault USDC",
+            "smvUSDC",
+            StrataxCalculations.LEVERAGE_PRECISION
         );
-        vault = StrataxManagedVault(vaultProxy);
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
+        vault = StrataxManagedVault(address(proxy));
     }
 
     function test_DepositAndRedeem_MintsAndBurnsShares() public {

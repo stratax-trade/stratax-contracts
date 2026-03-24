@@ -2,7 +2,7 @@
 pragma solidity ^0.8.13;
 
 import {BaseStrataxTest} from "./BaseStrataxTest.sol";
-import {Stratax} from "../../src/core/Stratax.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
@@ -72,9 +72,10 @@ contract StrataxBeaconProxyTest is BaseStrataxTest {
     function test_MultipleProxiesShareImplementation() public {
         // Mint second position NFT which deploys second Stratax proxy
         address secondOwner = address(0x456);
-        StrataxPositionNft.InitPositionParams memory emptyParams;
-        (uint256 tokenId2, address strataxProxy2) =
-            strataxPositionNft.mintPositionNft(secondOwner, USDC, WETH, false, emptyParams);
+        StrataxPositionNft.MintPositionParams memory emptyParams;
+        (uint256 tokenId2, address strataxProxy2) = strataxPositionNft.mintPositionByProtocolIds(
+            secondOwner, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
+        );
         Stratax stratax2 = Stratax(strataxProxy2);
 
         // Both proxies point to same implementation via beacon

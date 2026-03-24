@@ -2,7 +2,7 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Stratax} from "../src/core/Stratax.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 
 /**

@@ -33,7 +33,7 @@ contract MockFeeCollector {
             }
 
             pendingRewards[token] = 0;
-            IERC20(token).transfer(msg.sender, amount);
+            require(IERC20(token).transfer(msg.sender, amount), "MockFeeCollector: transfer failed");
         }
     }
 }

@@ -13,6 +13,9 @@ import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
+import {StrataxAaveLib} from "../libraries/lending/StrataxAaveLib.sol";
+import {Stratax1InchLib} from "../libraries/swapping/Stratax1InchLib.sol";
+import {StrataxCoreLib} from "../libraries/stratax/StrataxCoreLib.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 
 /*
@@ -22,12 +25,12 @@ import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/Reentrancy
  /        \|  |  |  | \// __ \|  |  / __ \_>    <
 /_______  /|__|  |__|  (____  /__| (____  /__/\_ \
         \/                  \/          \/      \/
-Author: Marquis Harris
+Author: Stratax
 */
 
 /**
- * @title Stratax
- * @author Marquis Harris
+ * @title Stratax_Aave_1Inch
+ * @author Stratax
  * @notice Represents a leveraged position powered by Aave and 1inch
  * @dev This contract is minted by the StrataxPositionNft contract as a beacon proxy
  * which will set the collateral token and borrow token. Each contract is only meant
@@ -37,7 +40,7 @@ Author: Marquis Harris
  * Leveraged positions are opened in the following steps:
  * 1. Supplying collateral from the user to Aave
  * 2. Taking Aave flash loan and supplying additional collateral
- * 3. Borrowing against toal supplied collateral
+ * 3. Borrowing against total supplied collateral
  * 4. Swapping the received borrowed token through 1inch back to collateral token
  * 5. Repay the flashloan with the amount recieved from swapping
  * Result is a short or long position.
@@ -46,7 +49,7 @@ Author: Marquis Harris
  * there are functions to manage the position's health with repay, borrow
  *
  */
-contract Stratax is Initializable, ReentrancyGuardTransient {
+contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
     /* @dev note are and debugging area */
     //
     //
@@ -109,21 +112,6 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
         uint256 collateralTokenPrice;
         /// @notice Price of borrow token in USD with 8 decimals
         uint256 borrowTokenPrice;
-    }
-
-    /// @notice Struct for Stratax initialization parameters
-    struct StrataxInitParams {
-        address aavePool;
-        address aaveDataProvider;
-        address oneInchRouter;
-        address strataxPositionNft;
-        uint256 tokenId;
-        address collateralToken;
-        address borrowToken;
-        address strataxOracle;
-        address feeCollector;
-        uint256 borrowSafetyMargin;
-        uint256 maxLeverageOffset;
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -317,30 +305,38 @@ contract Stratax is Initializable, ReentrancyGuardTransient {
 
     /// @notice Initializes the Stratax contract with required protocol addresses
     /// @dev Can only be called once due to initializer modifier
-    /// @param params Struct containing all initialization parameters
-    function initialize(StrataxInitParams calldata params) external initializer {
-        aavePool = IPool(params.aavePool);
-        aaveDataProvider = IProtocolDataProvider(params.aaveDataProvider);
-        oneInchRouter = IAggregationRouter(params.oneInchRouter);
-        strataxPositionNft = IStrataxPositionNft(params.strataxPositionNft);
-        tokenId = params.tokenId;
-        collateralToken = params.collateralToken;
-        borrowToken = params.borrowToken;
-        strataxOracle = params.strataxOracle;
+    /// @param lendingParams Lending initialization parameters (Aave)
+    /// @param swapParams Swap initialization parameters (1inch)
+    /// @param strataxParams Shared Stratax initialization parameters
+    function initialize(
+        StrataxAaveLib.PositionInitParams calldata lendingParams,
+        Stratax1InchLib.InitParams calldata swapParams,
+        StrataxCoreLib.InitParams calldata strataxParams
+    ) external initializer {
+        aavePool = IPool(lendingParams.aavePool);
+        aaveDataProvider = IProtocolDataProvider(lendingParams.aaveDataProvider);
+        oneInchRouter = IAggregationRouter(swapParams.oneInchRouter);
+        strataxPositionNft = IStrataxPositionNft(strataxParams.strataxPositionNft);
+        tokenId = strataxParams.tokenId;
+        collateralToken = strataxParams.collateralToken;
+        borrowToken = strataxParams.borrowToken;
+        strataxOracle = strataxParams.strataxOracle;
         flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL(); // Default 0.05% Aave flash loan fee
-        feeCollector = params.feeCollector;
-        maxLeverageOffset = params.maxLeverageOffset;
+        feeCollector = strataxParams.feeCollector;
+        maxLeverageOffset = lendingParams.maxLeverageOffset;
 
         // Fetch and store token decimals
-        collateralTokenDecimals = IERC20Metadata(params.collateralToken).decimals();
-        borrowTokenDecimals = IERC20Metadata(params.borrowToken).decimals();
+        collateralTokenDecimals = IERC20Metadata(strataxParams.collateralToken).decimals();
+        borrowTokenDecimals = IERC20Metadata(strataxParams.borrowToken).decimals();
 
         // Set borrow safety margin with default if not provided
-        if (params.borrowSafetyMargin == 0) {
+        if (lendingParams.borrowSafetyMargin == 0) {
             borrowSafetyMargin = 9900; // Default to 99% of max LTV
         } else {
-            require(params.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin");
-            borrowSafetyMargin = params.borrowSafetyMargin;
+            require(
+                lendingParams.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin"
+            );
+            borrowSafetyMargin = lendingParams.borrowSafetyMargin;
         }
     }
 

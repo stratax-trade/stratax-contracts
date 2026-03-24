@@ -56,7 +56,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
 
         // Seed sale inventory and whitelist WETH as payment token
         vm.startPrank(owner);
-        stratax.transfer(address(sale), 500_000e18);
+        assertTrue(stratax.transfer(address(sale), 500_000e18), "seed transfer failed");
         sale.whitelistPaymentToken(WETH, PYTH_ETH_USD_PRICE_ID, 7 days);
         vm.stopPrank();
 
@@ -116,7 +116,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * Example: USDC oracle price might be 1e6 (price of 1 USDC in USD with 6 decimals = $1.00)
      * Should normalize to 1e8 (8 decimals for $1.00)
      */
-    function test_NormalizePriceWith6Decimals() public {
+    function test_NormalizePriceWith6Decimals() public view {
         // Simulate a price feed with 6 decimals
         // Example: 1 USDC = $1.00 with 6 decimals = 1_000_000
         int64 price = 1_000_000; // $1.00 with 6 decimal exponent
@@ -133,7 +133,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test normalization of Pyth prices with 18 decimals (more than 8)
      * Example: A high-precision oracle price with 18 decimals = price / 10^10
      */
-    function test_NormalizePriceWith18Decimals() public {
+    function test_NormalizePriceWith18Decimals() public view {
         // Simulate a price feed with 18 decimals
         // Example: 1 token = $1.00 with 18 decimals = 1e18
         int64 price = 1_000_000_000_000_000_000; // $1.00 with 18 decimal exponent
@@ -150,7 +150,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test normalization with very small decimals (2 decimals)
      * Example: Price feed with only 2 decimal places
      */
-    function test_NormalizePriceWith2Decimals() public {
+    function test_NormalizePriceWith2Decimals() public view {
         // Simulate a price feed with 2 decimals
         // Example: price = 150 with expo -2 means $1.50
         int64 price = 150; // $1.50 with 2 decimal exponent
@@ -167,7 +167,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test normalization with zero exponent
      * Example: Price feed where price is already in the correct scale
      */
-    function test_NormalizePriceWithZeroExponent() public {
+    function test_NormalizePriceWithZeroExponent() public view {
         // Simulate a price feed with 0 exponent
         // This means the price value is already an integer USD value
         int64 price = 5; // $5.00 without decimal shift
@@ -184,7 +184,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test normalization with positive exponent (rare case)
      * Example: Price feed where exponent is positive means value is scaled up
      */
-    function test_NormalizePriceWithPositiveExponent() public {
+    function test_NormalizePriceWithPositiveExponent() public view {
         // Simulate a price feed with positive exponent
         // price = 1 with expo = 5 means 1 * 10^5 = 100000 (in the price feed's native scale)
         int64 price = 1; // 1 in some scaled representation
@@ -201,7 +201,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test buying with a simulated 6 decimal price feed
      * Verify quote calculation correctly handles different precision
      */
-    function test_QuoteCalculationWith6DecimalFeed() public {
+    function test_QuoteCalculationWith6DecimalFeed() public view {
         // Assume USDC-like token with 6 decimal price feed
         // Price: $1.00 with 6 decimals = 1_000_000
         int64 usdcPrice = 1_000_000; // $1.00
@@ -230,7 +230,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test buying with a simulated 18 decimal price feed
      * Verify quote calculation with high precision price feed
      */
-    function test_QuoteCalculationWith18DecimalFeed() public {
+    function test_QuoteCalculationWith18DecimalFeed() public view {
         // Custom token with 18 decimal price feed
         // Price: $2.50 with 18 decimals = 2.5e18
         int64 customTokenPrice = 2_500_000_000_000_000_000; // $2.50
@@ -259,7 +259,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
      * @notice Test that various decimal price feeds normalize correctly
      * Verifies that the normalization function handles edge cases
      */
-    function test_MultipleDecimalNormalizationRobustness() public {
+    function test_MultipleDecimalNormalizationRobustness() public view {
         // Test various decimal places
         uint256 expectedUsdValue = 250_000_000; // $2.50 with 8 decimals
 

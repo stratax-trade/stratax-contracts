@@ -1,26 +1,30 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import {IPool} from "../interfaces/external/IPool.sol";
-import {IProtocolDataProvider} from "../interfaces/external/IProtocolDataProvider.sol";
-import {IUniswapV3SwapRouter} from "../interfaces/external/IUniswapV3SwapRouter.sol";
-import {IStrataxOracle} from "../interfaces/internal/IStrataxOracle.sol";
-import {IStrataxPositionNft} from "../interfaces/internal/IStrataxPositionNft.sol";
-import {IFeeCollector} from "../interfaces/internal/IFeeCollector.sol";
+import {IPool} from "../../interfaces/external/IPool.sol";
+import {IProtocolDataProvider} from "../../interfaces/external/IProtocolDataProvider.sol";
+import {IUniswapV3SwapRouter} from "../../interfaces/external/IUniswapV3SwapRouter.sol";
+import {IStrataxOracle} from "../../interfaces/internal/IStrataxOracle.sol";
+import {IStrataxPositionNft} from "../../interfaces/internal/IStrataxPositionNft.sol";
+import {IFeeCollector} from "../../interfaces/internal/IFeeCollector.sol";
 import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
-import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
+import {StrataxCalculations} from "../../libraries/StrataxCalculations.sol";
+import {StrataxAaveLib} from "../../libraries/lending/StrataxAaveLib.sol";
+import {StrataxUniswapLib} from "../../libraries/swapping/StrataxUniswapLib.sol";
+import {StrataxCoreLib} from "../../libraries/stratax/StrataxCoreLib.sol";
+import {StrataxAaveUniswapCombinedLib} from "../../libraries/combined/StrataxAaveUniswapCombinedLib.sol";
 
 /**
- * @title StrataxUni
+ * @title Stratax_Aave_Uniswap
  * @notice A Uniswap-based leveraged position contract for Stratax.
  * @dev Uses Aave flash loans and Uniswap V3 exactInputSingle swaps.
  *      Opening params are computed internally from desired leverage.
  */
-contract StrataxUni is Initializable, ReentrancyGuardTransient {
+contract Stratax_Aave_Uniswap is Initializable, ReentrancyGuardTransient {
     using SafeERC20 for IERC20;
 
     enum OperationType {
@@ -45,20 +49,6 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
         uint256 debtAmount;
         uint24 poolFee;
         uint256 minReturnAmount;
-    }
-
-    struct StrataxUniInitParams {
-        address aavePool;
-        address aaveDataProvider;
-        address uniswapRouter;
-        address strataxPositionNft;
-        uint256 tokenId;
-        address collateralToken;
-        address borrowToken;
-        address strataxOracle;
-        address feeCollector;
-        uint256 borrowSafetyMargin;
-        uint256 maxLeverageOffset;
     }
 
     uint256 public constant VARIABLE_DEBT = 2;
@@ -116,35 +106,41 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
         _;
     }
 
-    function initialize(StrataxUniInitParams calldata params) external initializer {
-        require(params.uniswapRouter != address(0), "Invalid router");
-        require(params.collateralToken != address(0), "Invalid collateral token");
-        require(params.borrowToken != address(0), "Invalid borrow token");
-        require(params.strataxOracle != address(0), "Invalid oracle");
-        require(params.feeCollector != address(0), "Invalid fee collector");
+    function initialize(
+        StrataxAaveLib.PositionInitParams calldata lendingParams,
+        StrataxUniswapLib.InitParams calldata swapParams,
+        StrataxCoreLib.InitParams calldata strataxParams
+    ) external initializer {
+        require(swapParams.uniswapRouter != address(0), "Invalid router");
+        require(strataxParams.collateralToken != address(0), "Invalid collateral token");
+        require(strataxParams.borrowToken != address(0), "Invalid borrow token");
+        require(strataxParams.strataxOracle != address(0), "Invalid oracle");
+        require(strataxParams.feeCollector != address(0), "Invalid fee collector");
 
-        aavePool = IPool(params.aavePool);
-        aaveDataProvider = IProtocolDataProvider(params.aaveDataProvider);
-        uniswapRouter = IUniswapV3SwapRouter(params.uniswapRouter);
-        strataxPositionNft = IStrataxPositionNft(params.strataxPositionNft);
+        aavePool = IPool(lendingParams.aavePool);
+        aaveDataProvider = IProtocolDataProvider(lendingParams.aaveDataProvider);
+        uniswapRouter = IUniswapV3SwapRouter(swapParams.uniswapRouter);
+        strataxPositionNft = IStrataxPositionNft(strataxParams.strataxPositionNft);
 
-        tokenId = params.tokenId;
-        collateralToken = params.collateralToken;
-        borrowToken = params.borrowToken;
-        strataxOracle = params.strataxOracle;
-        feeCollector = params.feeCollector;
+        tokenId = strataxParams.tokenId;
+        collateralToken = strataxParams.collateralToken;
+        borrowToken = strataxParams.borrowToken;
+        strataxOracle = strataxParams.strataxOracle;
+        feeCollector = strataxParams.feeCollector;
 
         flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL();
-        maxLeverageOffset = params.maxLeverageOffset;
+        maxLeverageOffset = lendingParams.maxLeverageOffset;
 
-        collateralTokenDecimals = IERC20Metadata(params.collateralToken).decimals();
-        borrowTokenDecimals = IERC20Metadata(params.borrowToken).decimals();
+        collateralTokenDecimals = IERC20Metadata(strataxParams.collateralToken).decimals();
+        borrowTokenDecimals = IERC20Metadata(strataxParams.borrowToken).decimals();
 
-        if (params.borrowSafetyMargin == 0) {
+        if (lendingParams.borrowSafetyMargin == 0) {
             borrowSafetyMargin = 9900;
         } else {
-            require(params.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin");
-            borrowSafetyMargin = params.borrowSafetyMargin;
+            require(
+                lendingParams.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin"
+            );
+            borrowSafetyMargin = lendingParams.borrowSafetyMargin;
         }
     }
 
@@ -157,9 +153,23 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
         uint256 collateralAmount,
         uint24 poolFee,
         uint256 minReturnAmount
-    ) external onlyOwner {
+    ) public onlyOwner {
+        StrataxAaveUniswapCombinedLib.CreateLeveragedPositionParams memory params =
+            StrataxAaveUniswapCombinedLib.CreateLeveragedPositionParams({
+                desiredLeverage: desiredLeverage,
+                collateralAmount: collateralAmount,
+                poolFee: poolFee,
+                minReturnAmount: minReturnAmount
+            });
+
+        _createLeveragedPosition(params);
+    }
+
+    function _createLeveragedPosition(StrataxAaveUniswapCombinedLib.CreateLeveragedPositionParams memory createParams)
+        internal
+    {
         require(!isBurned, "Position is burned, only unwinding allowed");
-        require(desiredLeverage >= StrataxCalculations.LEVERAGE_PRECISION, "Leverage must be >= 1x");
+        require(createParams.desiredLeverage >= StrataxCalculations.LEVERAGE_PRECISION, "Leverage must be >= 1x");
 
         // Supply idle collateral first if any.
         uint256 idleCollateral = IERC20(collateralToken).balanceOf(address(this));
@@ -168,25 +178,73 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
             aavePool.supply(collateralToken, idleCollateral, address(this), 0);
         }
 
-        if (collateralAmount > 0) {
-            IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
+        if (createParams.collateralAmount > 0) {
+            IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), createParams.collateralAmount);
         }
 
         (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFeeAmount) =
-            _computeOpenParams(desiredLeverage, collateralAmount);
+            _computeOpenParams(createParams.desiredLeverage, createParams.collateralAmount);
 
         OpenParams memory params = OpenParams({
             collateralToken: collateralToken,
-            collateralAmount: collateralAmount,
+            collateralAmount: createParams.collateralAmount,
             borrowToken: borrowToken,
             borrowAmount: borrowAmount,
             strataxFeeAmount: strataxFeeAmount,
-            poolFee: poolFee,
-            minReturnAmount: minReturnAmount
+            poolFee: createParams.poolFee,
+            minReturnAmount: createParams.minReturnAmount
         });
 
         bytes memory encodedParams = abi.encode(OperationType.OPEN, msg.sender, params);
         aavePool.flashLoanSimple(address(this), collateralToken, flashLoanAmount, encodedParams, 0);
+    }
+
+    function adjustPositionLeverage(uint256 desiredLeverage, uint24 poolFee, uint256 minReturnAmount)
+        external
+        onlyOwner
+    {
+        require(!isBurned, "Position is burned, only unwinding allowed");
+        require(desiredLeverage >= StrataxCalculations.LEVERAGE_PRECISION, "Leverage must be >= 1x");
+
+        uint256 currentLeverage = getCurrentLeverage();
+        require(currentLeverage != desiredLeverage, "Already at target leverage");
+
+        if (currentLeverage < desiredLeverage) {
+            createLeveragedPosition(desiredLeverage, 0, poolFee, minReturnAmount);
+            return;
+        }
+
+        uint256 positionUsdValue = getPositionUsdValue();
+        require(positionUsdValue > 0, "No active equity");
+
+        uint256 leverageDelta = currentLeverage - desiredLeverage;
+        uint256 debtRepayUsdValue = (positionUsdValue * leverageDelta) / StrataxCalculations.LEVERAGE_PRECISION;
+
+        uint256 feeBps = flashLoanFeeBps + IFeeCollector(feeCollector).strataxFee();
+        uint256 denominator = StrataxCalculations.FLASHLOAN_FEE_PREC * StrataxCalculations.LEVERAGE_PRECISION;
+
+        if (desiredLeverage > StrataxCalculations.LEVERAGE_PRECISION && feeBps > 0) {
+            uint256 feeAdjustment = feeBps * (desiredLeverage - StrataxCalculations.LEVERAGE_PRECISION);
+            require(feeAdjustment < denominator, "Target leverage too high");
+            denominator = denominator - feeAdjustment;
+        }
+
+        debtRepayUsdValue =
+            (debtRepayUsdValue
+                    * StrataxCalculations.FLASHLOAN_FEE_PREC
+                    * StrataxCalculations.LEVERAGE_PRECISION
+                    + denominator
+                    - 1) / denominator;
+
+        uint256 borrowTokenPriceUsd = IStrataxOracle(strataxOracle).getPrice(borrowToken);
+        require(borrowTokenPriceUsd > 0, "Invalid borrow token price");
+
+        uint256 debtToRepay =
+            (debtRepayUsdValue * (10 ** borrowTokenDecimals) + borrowTokenPriceUsd - 1) / borrowTokenPriceUsd;
+        require(debtToRepay > 0, "Debt repay too small");
+
+        (uint256 collateralToWithdraw, uint256 debtAmount,) = calculateUnwindParams(debtToRepay);
+        unwindPosition(collateralToWithdraw, debtAmount, poolFee, minReturnAmount);
     }
 
     function calculateUnwindParams(uint256 debtToRepay)
@@ -225,7 +283,7 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
     }
 
     function unwindPosition(uint256 collateralToWithdraw, uint256 debtAmount, uint24 poolFee, uint256 minReturnAmount)
-        external
+        public
         onlyOwner
     {
         UnwindParams memory params = UnwindParams({
@@ -392,8 +450,6 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
         view
         returns (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFee)
     {
-        require(collateralAmount > 0, "Collateral must be > 0");
-
         (, uint256 ltv,,,,,,,,) = aaveDataProvider.getReserveConfigurationData(collateralToken);
         require(ltv > 0, "Asset not usable as collateral");
 
@@ -403,9 +459,13 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
         require(collateralTokenPrice > 0, "Collateral token price must be > 0");
         require(borrowTokenPrice > 0, "Borrow token price must be > 0");
 
+        uint256 freeCollateral = _getFreeCollateral(collateralTokenPrice, borrowTokenPrice, ltv);
+        uint256 totalCollateralAmount = collateralAmount + freeCollateral;
+        require(totalCollateralAmount > 0, "Collateral must be > 0");
+
         StrataxCalculations.CalcParams memory calcParams = StrataxCalculations.CalcParams({
             desiredLeverage: desiredLeverage,
-            collateralAmount: collateralAmount,
+            collateralAmount: totalCollateralAmount,
             collateralTokenPrice: collateralTokenPrice,
             borrowTokenPrice: borrowTokenPrice,
             collateralTokenDecimals: collateralTokenDecimals,
@@ -419,6 +479,28 @@ contract StrataxUni is Initializable, ReentrancyGuardTransient {
 
         StrataxCalculations.CalcResult memory result = StrataxCalculations.calculateOpenParams(calcParams);
         return (result.flashLoanAmount, result.borrowAmount, result.strataxFee);
+    }
+
+    function _getFreeCollateral(uint256 collateralTokenPrice, uint256 borrowTokenPrice, uint256 ltv)
+        internal
+        view
+        returns (uint256 freeCollateral)
+    {
+        (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
+        uint256 aTokenBalance = IERC20(aTokenCollateral).balanceOf(address(this));
+
+        (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
+        uint256 debtTokenAmount = IERC20(variableDebtToken).balanceOf(address(this));
+
+        uint256 collateralBackingDebt = (debtTokenAmount * borrowTokenPrice * (10 ** collateralTokenDecimals))
+            / (collateralTokenPrice * (10 ** borrowTokenDecimals));
+        require(ltv > 0, "Invalid LTV");
+
+        collateralBackingDebt = (collateralBackingDebt * StrataxCalculations.LTV_PRECISION + ltv - 1) / ltv;
+
+        if (aTokenBalance >= collateralBackingDebt) {
+            freeCollateral = aTokenBalance - collateralBackingDebt;
+        }
     }
 
     function owner() public view returns (address) {

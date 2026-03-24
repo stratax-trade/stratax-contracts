@@ -143,7 +143,7 @@ contract StrataxStakingUnitTest is Test {
 
         // Alice transfers all shares after rewards already accrued.
         vm.prank(alice);
-        staking.transfer(bob, 100e18);
+        assertTrue(staking.transfer(bob, 100e18), "share transfer failed");
 
         // Previously accrued rewards should remain claimable by Alice, not Bob.
         assertEq(staking.pendingReward(alice, address(rewardA)), 30e18, "alice should keep pre-transfer rewards");
@@ -168,7 +168,7 @@ contract StrataxStakingUnitTest is Test {
         staking.syncProtocolRewards();
 
         vm.prank(alice);
-        staking.transfer(bob, 50e18);
+        assertTrue(staking.transfer(bob, 50e18), "share transfer failed");
 
         // Second epoch: split by current balances (50/50).
         rewardA.mint(address(feeCollector), 20e18);

@@ -3,10 +3,15 @@ pragma solidity ^0.8.13;
 
 import {Test, console} from "forge-std/Test.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-import {Stratax} from "../../src/core/Stratax.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
+import {StrataxConfigManager} from "../../src/core/StrataxConfigManager.sol";
+import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
+import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
+import {StrataxAaveLib} from "../../src/libraries/lending/StrataxAaveLib.sol";
+import {Stratax1InchLib} from "../../src/libraries/swapping/Stratax1InchLib.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
@@ -16,10 +21,14 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
 /// @dev Run via: node test/scripts/calculate_and_save_swap_data.js
 /// @dev This test is meant to be run from the node script to record swap data with real 1inch API
 contract RecordSwapData is Test, ConstantsEtMainnet {
+    bytes32 internal constant LENDING_AAVE_V3_ID = keccak256("LENDING:AAVE_V3");
+    bytes32 internal constant SWAP_ONEINCH_V6_ID = keccak256("SWAP:ONEINCH_V6");
+
     Stratax public stratax;
     StrataxOracle public strataxOracle;
     FeeCollector public feeCollector;
     StrataxPositionNft public strataxPositionNft;
+    StrataxConfigManager public strataxConfigManager;
     address public ownerTrader;
     uint256 public tokenId;
 
@@ -47,7 +56,11 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         strataxOracle.setPriceFeeds(tokens, priceFeeds);
 
         Stratax strataxImplementation = new Stratax();
-        UpgradeableBeacon strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), admin);
+        UpgradeableBeacon strataxBeacon = UpgradeableBeacon(
+            address(
+                new StrataxProtocolBeacon(address(strataxImplementation), admin, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID)
+            )
+        );
 
         FeeCollector feeCollectorImplementation = new FeeCollector();
         bytes memory feeCollectorInitData =
@@ -59,12 +72,9 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
 
         StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
             StrataxPositionNft.StrataxPositionNftInitParams({
-                strataxBeacon: address(strataxBeacon),
-                aavePool: AAVE_POOL,
-                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-                oneInchRouter: INCH_ROUTER,
                 strataxOracle: address(strataxOracle),
                 feeCollector: address(feeCollector),
+                configManager: address(this),
                 owner: admin,
                 uri: "https://api.stratax.io/nft/metadata/"
             });
@@ -76,10 +86,43 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         vm.prank(admin);
         feeCollector.setStrataxPositionNft(address(strataxPositionNft));
 
+        {
+            StrataxConfigManager implementation = new StrataxConfigManager();
+            bytes memory initData =
+                abi.encodeWithSelector(StrataxConfigManager.initialize.selector, admin, address(strataxPositionNft));
+            ERC1967Proxy managerProxy = new ERC1967Proxy(address(implementation), initData);
+            strataxConfigManager = StrataxConfigManager(address(managerProxy));
+        }
+        vm.prank(admin);
+        strataxPositionNft.setConfigManager(address(strataxConfigManager));
+
+        bytes32 lendingProtocolId = LENDING_AAVE_V3_ID;
+        bytes32 swapProtocolId = SWAP_ONEINCH_V6_ID;
+        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(strataxPositionNft));
+        vm.prank(admin);
+        strataxConfigManager.setProtocolPairConfig(
+            lendingProtocolId, swapProtocolId, address(strataxBeacon), address(adapter)
+        );
+
+        StrataxAaveLib.InitParams memory lendingConfig = StrataxAaveLib.InitParams({
+            pool: AAVE_POOL,
+            dataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+            flashLoanFeeBps: IPool(AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL(),
+            defaultBorrowSafetyMargin: 9950,
+            defaultMaxLeverageOffset: 75
+        });
+        Stratax1InchLib.Config memory swapConfig = Stratax1InchLib.Config({router: INCH_ROUTER});
+
+        vm.prank(admin);
+        strataxConfigManager.setPlatformConfig(
+            lendingProtocolId, swapProtocolId, abi.encode(lendingConfig), abi.encode(swapConfig)
+        );
+
         // Mint position NFT which deploys Stratax proxy
-        StrataxPositionNft.InitPositionParams memory emptyParams;
-        (uint256 _tokenId, address strataxProxy) =
-            strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams);
+        StrataxPositionNft.MintPositionParams memory emptyParams;
+        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
+            ownerTrader, USDC, WETH, lendingProtocolId, swapProtocolId, false, emptyParams
+        );
         tokenId = _tokenId;
         stratax = Stratax(strataxProxy);
     }
@@ -179,9 +222,12 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         );
         bytes memory openSwap30000 = _recordSwapAndGet(WETH, USDC, borrow30000, address(stratax));
 
-        // Uses StrataxPositionNft.calculateInitOpenParams in the fork test.
-        (uint256 flashLoan25000_2000, uint256 borrow25000_2000,) =
-            strataxPositionNft.calculateInitOpenParams(USDC, WETH, collateral2000, 25_000);
+        // Equivalent params used by mint-and-open flows with 2,000 USDC collateral at 2.5x leverage.
+        (uint256 flashLoan25000_2000, uint256 borrow25000_2000) = stratax.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: 25_000, collateralAmount: collateral2000, collateralTokenPrice: 0, borrowTokenPrice: 0
+            })
+        );
         _recordSwap(WETH, USDC, borrow25000_2000, address(stratax));
 
         uint256 maxLeverage = stratax.getMaxAchievableLeverageBinary();
@@ -211,9 +257,10 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         vm.stopPrank();
 
         // Re-mint a fresh USDC/WETH position for 20k leverage unwind variants.
-        StrataxPositionNft.InitPositionParams memory emptyParams1;
-        (uint256 tokenId20k, address strataxProxy20k) =
-            strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams1);
+        StrataxPositionNft.MintPositionParams memory emptyParams1;
+        (uint256 tokenId20k, address strataxProxy20k) = strataxPositionNft.mintPositionByProtocolIds(
+            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams1
+        );
         Stratax stratax20k = Stratax(strataxProxy20k);
 
         deal(USDC, ownerTrader, collateral1000);
@@ -234,8 +281,10 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         vm.stopPrank();
 
         // Fresh USDC/WETH position for 25k leverage unwind-with-slippage variant.
-        StrataxPositionNft.InitPositionParams memory emptyParams2;
-        (, address strataxProxy25k) = strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams2);
+        StrataxPositionNft.MintPositionParams memory emptyParams2;
+        (, address strataxProxy25k) = strataxPositionNft.mintPositionByProtocolIds(
+            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams2
+        );
         Stratax stratax25k = Stratax(strataxProxy25k);
 
         deal(USDC, ownerTrader, collateral1000);
@@ -252,8 +301,10 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
 
         // test_MultiplePositionsSameOwner second position (WETH collateral / USDC borrow)
         address multiTrader = address(0xBEEF);
-        StrataxPositionNft.InitPositionParams memory emptyParams3;
-        (, address strataxProxy2) = strataxPositionNft.mintPositionNft(multiTrader, WETH, USDC, false, emptyParams3);
+        StrataxPositionNft.MintPositionParams memory emptyParams3;
+        (, address strataxProxy2) = strataxPositionNft.mintPositionByProtocolIds(
+            multiTrader, WETH, USDC, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams3
+        );
         Stratax stratax2 = Stratax(strataxProxy2);
 
         (, uint256 borrowReversePair) = stratax2.calculateOpenParams(

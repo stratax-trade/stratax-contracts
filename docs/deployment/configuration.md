@@ -300,7 +300,7 @@ Operational recommendation:
 Deploy and initialize managed vaults through the deployer:
 
 ```solidity
-StrataxManagedVaultDeployer deployer = StrataxManagedVaultDeployer(DEPLOYER_ADDRESS);
+StrataxDeployer_Aave_1Inch deployer = StrataxDeployer_Aave_1Inch(DEPLOYER_ADDRESS);
 
 address vault = deployer.deployVault(
     STRATAX_POSITION_PROXY,

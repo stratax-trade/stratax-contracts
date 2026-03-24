@@ -2,10 +2,10 @@
 pragma solidity ^0.8.13;
 
 import {Script, console} from "forge-std/Script.sol";
-import {Stratax} from "../src/core/Stratax.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxOracle} from "../src/core/StrataxOracle.sol";
+import {StrataxProtocolBeacon} from "../src/core/StrataxProtocolBeacon.sol";
 import {ConstantsEtMainnet} from "../test/Constants.sol";
-import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
 
 /**
@@ -17,6 +17,9 @@ import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol"
  *      3. BeaconProxy that delegates to the implementation via the beacon
  */
 contract DeployStrataxBeacon is Script, ConstantsEtMainnet {
+    bytes32 internal constant LENDING_AAVE_V3_ID = keccak256("LENDING:AAVE_V3");
+    bytes32 internal constant SWAP_ONEINCH_V6_ID = keccak256("SWAP:ONEINCH_V6");
+
     // forge script script/DeployStrataxBeacon.s.sol --rpc-url http://127.0.0.1:8545
     function run() external {
         // Anvil: http://127.0.0.1:8545
@@ -31,7 +34,8 @@ contract DeployStrataxBeacon is Script, ConstantsEtMainnet {
         console.log("Stratax Implementation deployed at:", address(implementation));
 
         // 2. Deploy the beacon pointing to the implementation
-        UpgradeableBeacon beacon = new UpgradeableBeacon(address(implementation), msg.sender);
+        StrataxProtocolBeacon beacon =
+            new StrataxProtocolBeacon(address(implementation), msg.sender, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         console.log("UpgradeableBeacon deployed at:", address(beacon));
 
         // 3. Encode the initialize function call

@@ -70,7 +70,7 @@ Withdraw/redeem uses idle collateral if available. If idle collateral is insuffi
 
 ## Deployment Pattern
 
-Managed vaults are deployed with beacon proxies using `StrataxManagedVaultDeployer`.
+Managed vaults are deployed with beacon proxies using `StrataxDeployer_Aave_1Inch`.
 
 Two deployment paths are supported:
 

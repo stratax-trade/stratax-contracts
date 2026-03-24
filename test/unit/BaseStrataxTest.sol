@@ -2,10 +2,15 @@
 pragma solidity ^0.8.13;
 
 import {Test, console} from "forge-std/Test.sol";
-import {Stratax} from "../../src/core/Stratax.sol";
+import {Stratax_Aave_1Inch as Stratax} from "../../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
+import {StrataxConfigManager} from "../../src/core/StrataxConfigManager.sol";
+import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
+import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
+import {StrataxAaveLib} from "../../src/libraries/lending/StrataxAaveLib.sol";
+import {Stratax1InchLib} from "../../src/libraries/swapping/Stratax1InchLib.sol";
 import {ConstantsEtMainnet} from "../Constants.sol";
 import {UpgradeableBeacon} from "@openzeppelin/contracts/proxy/beacon/UpgradeableBeacon.sol";
 import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.sol";
@@ -16,6 +21,9 @@ import {ERC1967Proxy} from "@openzeppelin/contracts/proxy/ERC1967/ERC1967Proxy.s
  * @dev All Stratax test contracts should inherit from this base
  */
 abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
+    bytes32 internal constant LENDING_AAVE_V3_ID = keccak256("LENDING:AAVE_V3");
+    bytes32 internal constant SWAP_ONEINCH_V6_ID = keccak256("SWAP:ONEINCH_V6");
+
     // Default configuration values (matching deployment script)
     uint256 public constant DEFAULT_STRATAX_FEE = 50; // 0.5% (50/10000)
     string public constant DEFAULT_NFT_URI = "https://api.stratax.io/nft/metadata/";
@@ -33,6 +41,7 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
     FeeCollector public feeCollector;
     FeeCollector public feeCollectorImplementation;
     ERC1967Proxy public feeCollectorProxy;
+    StrataxConfigManager public strataxConfigManager;
 
     // Test addresses
     address public ownerTrader;
@@ -63,6 +72,9 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         deployStrataxBeacon(admin);
         deployFeeCollector(admin, address(0)); // Pass address(0) for now, will be set when NFT is deployed
         deployStrataxPositionNft(admin);
+        deployStrataxConfigManager(admin);
+
+        _configureDefaultAaveOneInch(strataxConfigManager, strataxPositionNft, address(strataxBeacon), 9, admin);
 
         // Update FeeCollector with actual StrataxPositionNft address
         vm.prank(admin);
@@ -150,9 +162,10 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
      * @notice Mints the initial position NFT (can be overridden to skip)
      */
     function mintInitialPosition() internal virtual {
-        StrataxPositionNft.InitPositionParams memory emptyParams;
-        (uint256 _tokenId, address strataxProxy) =
-            strataxPositionNft.mintPositionNft(ownerTrader, USDC, WETH, false, emptyParams);
+        StrataxPositionNft.MintPositionParams memory emptyParams;
+        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
+            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
+        );
         tokenId = _tokenId;
         stratax = Stratax(strataxProxy);
     }
@@ -217,7 +230,11 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         strataxImplementation = new Stratax();
 
         // Deploy beacon
-        strataxBeacon = new UpgradeableBeacon(address(strataxImplementation), owner);
+        strataxBeacon = UpgradeableBeacon(
+            address(
+                new StrataxProtocolBeacon(address(strataxImplementation), owner, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID)
+            )
+        );
     }
 
     /**
@@ -231,12 +248,9 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         // Create initialization params
         StrataxPositionNft.StrataxPositionNftInitParams memory initParams =
             StrataxPositionNft.StrataxPositionNftInitParams({
-                strataxBeacon: address(strataxBeacon),
-                aavePool: AAVE_POOL,
-                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-                oneInchRouter: INCH_ROUTER,
                 strataxOracle: address(strataxOracle),
                 feeCollector: address(feeCollector),
+                configManager: address(this),
                 owner: owner,
                 uri: DEFAULT_NFT_URI
             });
@@ -247,6 +261,16 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         // Deploy UUPS proxy
         strataxPositionNftProxy = new ERC1967Proxy(address(strataxPositionNftImplementation), initData);
         strataxPositionNft = StrataxPositionNft(address(strataxPositionNftProxy));
+    }
+
+    function deployStrataxConfigManager(address owner) internal {
+        StrataxConfigManager implementation = new StrataxConfigManager();
+        bytes memory initData =
+            abi.encodeWithSelector(StrataxConfigManager.initialize.selector, owner, address(strataxPositionNft));
+        ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
+        strataxConfigManager = StrataxConfigManager(address(proxy));
+        vm.prank(owner);
+        strataxPositionNft.setConfigManager(address(strataxConfigManager));
     }
 
     /**
@@ -265,12 +289,9 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         // Create initialization params
         StrataxPositionNft.StrataxPositionNftInitParams memory nftParams =
             StrataxPositionNft.StrataxPositionNftInitParams({
-                strataxBeacon: address(strataxBeacon),
-                aavePool: AAVE_POOL,
-                aaveDataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
-                oneInchRouter: INCH_ROUTER,
                 strataxOracle: address(strataxOracle),
                 feeCollector: customFeeCollector,
+                configManager: address(this),
                 owner: owner,
                 uri: DEFAULT_NFT_URI
             });
@@ -278,13 +299,55 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         // Encode initialize call
         bytes memory nftInitData = abi.encodeWithSelector(StrataxPositionNft.initialize.selector, nftParams);
 
+        // Deploy UUPS proxy
+        ERC1967Proxy testProxy = new ERC1967Proxy(address(testImplementation), nftInitData);
+        testNft = StrataxPositionNft(address(testProxy));
+
+        StrataxConfigManager testConfigManager;
+        {
+            StrataxConfigManager implementation = new StrataxConfigManager();
+            bytes memory initData =
+                abi.encodeWithSelector(StrataxConfigManager.initialize.selector, owner, address(testNft));
+            ERC1967Proxy proxy = new ERC1967Proxy(address(implementation), initData);
+            testConfigManager = StrataxConfigManager(address(proxy));
+        }
+        vm.prank(owner);
+        testNft.setConfigManager(address(testConfigManager));
+
+        _configureDefaultAaveOneInch(testConfigManager, testNft, address(strataxBeacon), 9, owner);
+
         // Update fee collector with this NFT contract if it's not the same as the main one
         if (customFeeCollector != address(feeCollector)) {
             vm.prank(owner);
             FeeCollector(customFeeCollector).setStrataxPositionNft(address(testNft));
         }
-        // Deploy UUPS proxy
-        ERC1967Proxy testProxy = new ERC1967Proxy(address(testImplementation), nftInitData);
-        testNft = StrataxPositionNft(address(testProxy));
+    }
+
+    function _configureDefaultAaveOneInch(
+        StrataxConfigManager manager,
+        StrataxPositionNft nft,
+        address beacon,
+        uint256 flashLoanFeeBps_,
+        address caller
+    ) internal {
+        bytes32 lendingProtocolId = LENDING_AAVE_V3_ID;
+        bytes32 swapProtocolId = SWAP_ONEINCH_V6_ID;
+
+        vm.startPrank(caller);
+        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(nft));
+        manager.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, address(adapter));
+
+        StrataxAaveLib.InitParams memory lendingConfig = StrataxAaveLib.InitParams({
+            pool: AAVE_POOL,
+            dataProvider: AAVE_PROTOCOL_DATA_PROVIDER,
+            flashLoanFeeBps: flashLoanFeeBps_,
+            defaultBorrowSafetyMargin: 9950,
+            defaultMaxLeverageOffset: 75
+        });
+
+        Stratax1InchLib.Config memory swapConfig = Stratax1InchLib.Config({router: INCH_ROUTER});
+
+        manager.setPlatformConfig(lendingProtocolId, swapProtocolId, abi.encode(lendingConfig), abi.encode(swapConfig));
+        vm.stopPrank();
     }
 }

@@ -37,10 +37,3 @@ This creates: `test/fixtures/swap_data_block_21700000.json`
 
 - `ONE_INCH_API_KEY` - Your 1inch API key (optional for saved data tests)
 - `ETH_RPC_URL` - Ethereum RPC endpoint (required for fork tests)
-
-## Benefits
-
-✅ Run tests without API key  
-✅ Deterministic results  
-✅ No rate limits  
-✅ Faster CI/CD
