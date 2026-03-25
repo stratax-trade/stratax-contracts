@@ -3,6 +3,7 @@ pragma solidity ^0.8.13;
 
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {Stratax_Aave_Uniswap as StrataxUniswap} from "../../src/core/position-types/Stratax_Aave_Uniswap.sol";
+import {StrataxRouter} from "../../src/core/StrataxRouter.sol";
 import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {AaveUniswapPositionAdapter} from "../../src/core/adapters/AaveUniswapPositionAdapter.sol";
 import {StrataxAavePositionInitConstants} from "../../src/libraries/constants/StrataxAavePositionInitConstants.sol";
@@ -15,13 +16,11 @@ contract StrataxUniswapForkTest is StrataxForkTestBase {
     bytes32 internal constant SWAP_UNISWAP_V3_ID = keccak256("SWAP:UNISWAP_V3");
 
     function test_MintAaveUniswapPosition() public {
-        AaveUniswapPositionAdapter adapter = _configureDefaultAaveUniswap();
-        adapter;
+        _configureDefaultAaveUniswap();
 
         address positionOwner = address(0xBEEF);
-        (uint256 mintedTokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            positionOwner, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID, false, bytes("")
-        );
+        (uint256 mintedTokenId, address strataxProxy) =
+            strataxPositionNft.mintPosition(positionOwner, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID);
 
         assertTrue(strataxProxy != address(0), "Stratax proxy should be deployed");
         assertEq(strataxPositionNft.ownerOf(mintedTokenId), positionOwner, "NFT owner should match mint recipient");
@@ -29,38 +28,22 @@ contract StrataxUniswapForkTest is StrataxForkTestBase {
     }
 
     function test_MintAndOpenUniswapPositionInOneCall() public {
-        AaveUniswapPositionAdapter adapter = _configureDefaultAaveUniswap();
+        _configureDefaultAaveUniswap();
+
+        StrataxRouter router = new StrataxRouter(address(strataxPositionNft));
 
         address positionOwner = address(0xCAFE);
         uint256 collateralAmount = 2000 * 10 ** 6; // 2000 USDC
         uint256 desiredLeverage = 25_000; // 2.5x
         uint24 poolFee = StrataxUniswapConstants.ETHEREUM_DEFAULT_UNISWAP_POOL_FEE;
 
-        (bytes memory mintCallData,) = adapter.buildCreateLeveragedPositionCallData(
-            positionOwner,
-            USDC,
-            WETH,
-            LENDING_AAVE_V3_ID,
-            SWAP_UNISWAP_V3_ID,
-            collateralAmount,
-            desiredLeverage,
-            poolFee,
-            0
-        );
-
         deal(USDC, positionOwner, collateralAmount);
 
         vm.startPrank(positionOwner);
-        IERC20(USDC).approve(address(strataxPositionNft), collateralAmount);
+        IERC20(USDC).approve(address(router), collateralAmount);
 
-        (bool mintSuccess, bytes memory mintResult) = address(strataxPositionNft).call(mintCallData);
-        if (!mintSuccess) {
-            assembly {
-                revert(add(mintResult, 0x20), mload(mintResult))
-            }
-        }
-
-        (uint256 mintedTokenId, address strataxProxy) = abi.decode(mintResult, (uint256, address));
+        (uint256 mintedTokenId, address strataxProxy) =
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, poolFee, 0);
         vm.stopPrank();
 
         assertEq(strataxPositionNft.ownerOf(mintedTokenId), positionOwner, "NFT owner should match mint recipient");

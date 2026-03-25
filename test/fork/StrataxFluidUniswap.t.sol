@@ -4,6 +4,7 @@ pragma solidity ^0.8.13;
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
 import {console} from "forge-std/console.sol";
 import {Stratax_Fluid_Uniswap as StrataxFluidUniswap} from "../../src/core/position-types/Stratax_Fluid_Uniswap.sol";
+import {StrataxRouter} from "../../src/core/StrataxRouter.sol";
 import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {FluidUniswapPositionAdapter} from "../../src/core/adapters/FluidUniswapPositionAdapter.sol";
 import {StrataxFluidConstants} from "../../src/libraries/constants/StrataxFluidConstants.sol";
@@ -32,8 +33,8 @@ contract StrataxFluidUniswapForkTest is StrataxForkTestBase {
         address positionOwner = address(0xBEEF);
         address collateralToken = USDC;
         address borrowToken = WBTC;
-        (uint256 mintedTokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            positionOwner, collateralToken, borrowToken, LENDING_FLUID_V1_ID, SWAP_UNISWAP_V3_ID, false, bytes("")
+        (uint256 mintedTokenId, address strataxProxy) = strataxPositionNft.mintPosition(
+            positionOwner, collateralToken, borrowToken, LENDING_FLUID_V1_ID, SWAP_UNISWAP_V3_ID
         );
 
         assertTrue(strataxProxy != address(0), "Stratax proxy should be deployed");
@@ -45,8 +46,9 @@ contract StrataxFluidUniswapForkTest is StrataxForkTestBase {
 
     function test_MintAndOpenFluidUniswapPositionInOneCall() public {
         _setWbtcPriceFeed();
-        FluidUniswapPositionAdapter adapter =
-            _configureDefaultFluidUniswap(FLUID_USDC_WBTC_VAULT, USDC_WBTC_UNISWAP_FEE);
+        _configureDefaultFluidUniswap(FLUID_USDC_WBTC_VAULT, USDC_WBTC_UNISWAP_FEE);
+
+        StrataxRouter router = new StrataxRouter(address(strataxPositionNft));
 
         address positionOwner = address(0xCAFE);
         address collateralToken = USDC;
@@ -55,31 +57,14 @@ contract StrataxFluidUniswapForkTest is StrataxForkTestBase {
         uint256 desiredLeverage = 30_000; // 3.0x
         uint24 poolFee = USDC_WBTC_UNISWAP_FEE;
 
-        (bytes memory mintCallData,) = adapter.buildCreateLeveragedPositionCallData(
-            positionOwner,
-            collateralToken,
-            borrowToken,
-            LENDING_FLUID_V1_ID,
-            SWAP_UNISWAP_V3_ID,
-            collateralAmount,
-            desiredLeverage,
-            poolFee,
-            0
-        );
-
         deal(collateralToken, positionOwner, collateralAmount);
 
         vm.startPrank(positionOwner);
-        IERC20(collateralToken).approve(address(strataxPositionNft), collateralAmount);
+        IERC20(collateralToken).approve(address(router), collateralAmount);
 
-        (bool mintSuccess, bytes memory mintResult) = address(strataxPositionNft).call(mintCallData);
-        if (!mintSuccess) {
-            assembly {
-                revert(add(mintResult, 0x20), mload(mintResult))
-            }
-        }
-
-        (uint256 mintedTokenId, address strataxProxy) = abi.decode(mintResult, (uint256, address));
+        (uint256 mintedTokenId, address strataxProxy) = router.createFluidUniswapPosition(
+            collateralToken, borrowToken, collateralAmount, desiredLeverage, poolFee, 0
+        );
         vm.stopPrank();
 
         assertEq(strataxPositionNft.ownerOf(mintedTokenId), positionOwner, "NFT owner should match mint recipient");
@@ -194,9 +179,8 @@ contract StrataxFluidUniswapForkTest is StrataxForkTestBase {
     }
 
     function _mintClosedPosition(address positionOwner) internal returns (StrataxFluidUniswap position) {
-        (uint256 mintedTokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            positionOwner, USDC, WBTC, LENDING_FLUID_V1_ID, SWAP_UNISWAP_V3_ID, false, bytes("")
-        );
+        (uint256 mintedTokenId, address strataxProxy) =
+            strataxPositionNft.mintPosition(positionOwner, USDC, WBTC, LENDING_FLUID_V1_ID, SWAP_UNISWAP_V3_ID);
 
         mintedTokenId;
         position = StrataxFluidUniswap(strataxProxy);

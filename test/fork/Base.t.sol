@@ -124,10 +124,8 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
         feeCollector.setStrataxPositionNft(address(strataxPositionNft));
 
         // Mint position NFT which deploys Stratax proxy
-        StrataxPositionNft.MintPositionParams memory emptyParams;
-        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
-        );
+        (uint256 _tokenId, address strataxProxy) =
+            strataxPositionNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         tokenId = _tokenId;
         stratax = Stratax(strataxProxy);
     }
@@ -249,8 +247,7 @@ abstract contract StrataxForkTestBase is Test, ConstantsEtMainnet {
         AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(nft));
         manager.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, address(adapter));
 
-        bytes memory lendingData =
-            abi.encode(StrataxAavePositionInitConstants.ethereumConfigParams(flashLoanFeeBps_));
+        bytes memory lendingData = abi.encode(StrataxAavePositionInitConstants.ethereumConfigParams(flashLoanFeeBps_));
         bytes memory swapData = abi.encode(Stratax1InchConstants.ethereumConfigParams());
 
         manager.setPlatformConfig(lendingProtocolId, swapProtocolId, lendingData, swapData);

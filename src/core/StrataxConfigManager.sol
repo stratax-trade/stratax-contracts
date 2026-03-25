@@ -10,6 +10,10 @@ import {StrataxCalculations} from "../libraries/StrataxCalculations.sol";
 import {IStrataxPositionAdapter} from "../interfaces/internal/IStrataxPositionAdapter.sol";
 import {IStrataxProtocolBeacon} from "../interfaces/internal/IStrataxProtocolBeacon.sol";
 
+/// @title StrataxConfigManager
+/// @notice Manages protocol pair configuration for the Stratax system.
+/// @dev Owner-gated contract that validates and applies configuration to StrataxPositionNft.
+///      Centralizes all admin configuration so the NFT contract only needs to trust this one address.
 contract StrataxConfigManager is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     StrataxPositionNft public positionNft;
 
@@ -24,6 +28,43 @@ contract StrataxConfigManager is Initializable, OwnableUpgradeable, UUPSUpgradea
         positionNft = StrataxPositionNft(positionNft_);
     }
 
+    /// @notice Registers a new protocol pair (beacon + adapter) and sets platform configs in one call.
+    /// @param lendingProtocolId Lending protocol identifier
+    /// @param swapProtocolId Swap protocol identifier
+    /// @param beacon Beacon contract for this protocol pair
+    /// @param adapter Adapter contract for this protocol pair
+    /// @param lendingData Encoded lending config (e.g. StrataxAaveLib.InitParams)
+    /// @param swapData Encoded swap config (e.g. StrataxUniswapLib.Config)
+    function registerProtocolPair(
+        bytes32 lendingProtocolId,
+        bytes32 swapProtocolId,
+        address beacon,
+        address adapter,
+        bytes calldata lendingData,
+        bytes calldata swapData
+    ) external onlyOwner {
+        _validateProtocolPairArgs(lendingProtocolId, swapProtocolId, beacon, adapter);
+        require(lendingData.length > 0, "Missing lending config");
+        require(swapData.length > 0, "Missing swap config");
+
+        positionNft.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, adapter);
+        positionNft.setPairAdapter(lendingProtocolId, swapProtocolId, adapter);
+        positionNft.setLendingProtocolConfig(lendingProtocolId, lendingData);
+        positionNft.setSwapProtocolConfig(swapProtocolId, swapData);
+    }
+
+    /// @notice Registers beacon + adapter without changing platform configs.
+    function setProtocolPairConfig(bytes32 lendingProtocolId, bytes32 swapProtocolId, address beacon, address adapter)
+        external
+        onlyOwner
+    {
+        _validateProtocolPairArgs(lendingProtocolId, swapProtocolId, beacon, adapter);
+
+        positionNft.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, adapter);
+        positionNft.setPairAdapter(lendingProtocolId, swapProtocolId, adapter);
+    }
+
+    /// @notice Updates platform configs for an already-registered protocol pair.
     function setPlatformConfig(
         bytes32 lendingProtocolId,
         bytes32 swapProtocolId,
@@ -34,13 +75,27 @@ contract StrataxConfigManager is Initializable, OwnableUpgradeable, UUPSUpgradea
         require(swapProtocolId != bytes32(0), "Invalid swap protocol id");
         require(lendingData.length > 0, "Missing lending config");
         require(swapData.length > 0, "Missing swap config");
-        _applyConfig(lendingProtocolId, swapProtocolId, lendingData, swapData);
+        positionNft.setLendingProtocolConfig(lendingProtocolId, lendingData);
+        positionNft.setSwapProtocolConfig(swapProtocolId, swapData);
     }
 
-    function setProtocolPairConfig(bytes32 lendingProtocolId, bytes32 swapProtocolId, address beacon, address adapter)
-        external
-        onlyOwner
-    {
+    /// @notice Updates an adapter for an existing protocol pair.
+    function setPairAdapter(bytes32 lendingProtocolId, bytes32 swapProtocolId, address adapter) external onlyOwner {
+        positionNft.setPairAdapter(lendingProtocolId, swapProtocolId, adapter);
+    }
+
+    /// @notice Updates the flash loan fee for a lending protocol.
+    function updatePlatformFlashLoanFee(bytes32 lendingProtocolId, uint256 newFeeBps) external onlyOwner {
+        require(newFeeBps < StrataxCalculations.FLASHLOAN_FEE_PREC, "Invalid flash loan fee");
+        positionNft.updateProtocolFlashLoanFee(lendingProtocolId, newFeeBps);
+    }
+
+    function _validateProtocolPairArgs(
+        bytes32 lendingProtocolId,
+        bytes32 swapProtocolId,
+        address beacon,
+        address adapter
+    ) internal view {
         require(lendingProtocolId != bytes32(0), "Invalid lending protocol id");
         require(swapProtocolId != bytes32(0), "Invalid swap protocol id");
         require(beacon != address(0), "Invalid beacon");
@@ -56,28 +111,6 @@ contract StrataxConfigManager is Initializable, OwnableUpgradeable, UUPSUpgradea
             IStrataxProtocolBeacon(beacon).supportsProtocolPair(lendingProtocolId, swapProtocolId),
             "Beacon protocol ids mismatch"
         );
-
-        positionNft.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, adapter);
-        positionNft.setPairAdapter(lendingProtocolId, swapProtocolId, adapter);
-    }
-
-    function setPairAdapter(bytes32 lendingProtocolId, bytes32 swapProtocolId, address adapter) external onlyOwner {
-        positionNft.setPairAdapter(lendingProtocolId, swapProtocolId, adapter);
-    }
-
-    function updatePlatformFlashLoanFee(bytes32 lendingProtocolId, uint256 newFeeBps) external onlyOwner {
-        require(newFeeBps < StrataxCalculations.FLASHLOAN_FEE_PREC, "Invalid flash loan fee");
-        positionNft.updateProtocolFlashLoanFee(lendingProtocolId, newFeeBps);
-    }
-
-    function _applyConfig(
-        bytes32 lendingProtocolId,
-        bytes32 swapProtocolId,
-        bytes memory lendingData,
-        bytes memory swapData
-    ) internal {
-        positionNft.setLendingProtocolConfig(lendingProtocolId, lendingData);
-        positionNft.setSwapProtocolConfig(swapProtocolId, swapData);
     }
 
     function _authorizeUpgrade(address newImplementation) internal override onlyOwner {}

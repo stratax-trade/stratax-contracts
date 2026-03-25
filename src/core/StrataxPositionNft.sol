@@ -9,8 +9,6 @@ import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Ini
 import {OwnableUpgradeable} from "@openzeppelin/contracts-upgradeable/access/OwnableUpgradeable.sol";
 import {UUPSUpgradeable} from "@openzeppelin/contracts-upgradeable/proxy/utils/UUPSUpgradeable.sol";
 import {IFeeCollector} from "../interfaces/internal/IFeeCollector.sol";
-import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {IERC721Receiver} from "@openzeppelin/contracts/token/ERC721/IERC721Receiver.sol";
 import {Base64} from "@openzeppelin/contracts/utils/Base64.sol";
 import {Strings} from "@openzeppelin/contracts/utils/Strings.sol";
@@ -35,7 +33,6 @@ contract StrataxPositionNft is
     /*//////////////////////////////////////////////////////////////
                             TYPE DECLARATIONS
     //////////////////////////////////////////////////////////////*/
-    using SafeERC20 for IERC20;
 
     /// @notice Struct for StrataxPositionNft initialization parameters
     struct StrataxPositionNftInitParams {
@@ -177,9 +174,6 @@ contract StrataxPositionNft is
     );
     event LendingProtocolConfigUpdated(bytes32 indexed lendingProtocolId);
     event SwapProtocolConfigUpdated(bytes32 indexed swapProtocolId);
-    event PairAdapterOpenPositionSchemaUpdated(
-        bytes32 indexed lendingProtocolId, bytes32 indexed swapProtocolId, bytes32 schemaId, uint16 schemaVersion
-    );
 
     /*//////////////////////////////////////////////////////////////
                               MODIFIERS
@@ -237,24 +231,6 @@ contract StrataxPositionNft is
         require(adapter.code.length > 0, "Adapter must be contract");
         pairAdapterByProtocolIds[lendingProtocolId][swapProtocolId] = adapter;
         emit PairAdapterUpdated(lendingProtocolId, swapProtocolId, adapter);
-        emit PairAdapterOpenPositionSchemaUpdated(
-            lendingProtocolId,
-            swapProtocolId,
-            IStrataxPositionAdapter(adapter).openPositionSchemaId(),
-            IStrataxPositionAdapter(adapter).openPositionSchemaVersion()
-        );
-    }
-
-    function getPairAdapterOpenPositionSchema(bytes32 lendingProtocolId, bytes32 swapProtocolId)
-        external
-        view
-        returns (bytes32 schemaId, uint16 schemaVersion)
-    {
-        address adapterAddress = pairAdapterByProtocolIds[lendingProtocolId][swapProtocolId];
-        require(adapterAddress != address(0), "Pair adapter not configured");
-        IStrataxPositionAdapter adapter = IStrataxPositionAdapter(adapterAddress);
-        schemaId = adapter.openPositionSchemaId();
-        schemaVersion = adapter.openPositionSchemaVersion();
     }
 
     function setProtocolPairConfig(bytes32 lendingProtocolId, bytes32 swapProtocolId, address beacon, address adapter)
@@ -289,61 +265,22 @@ contract StrataxPositionNft is
                         EXTERNAL FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
-    struct MintPositionParams {
-        uint256 collateralAmount;
-        uint256 leverage;
-        uint256 minSwapAmountOut;
-        bytes data;
-    }
-
-    function mintPositionByProtocolIds(
+    /// @notice Mints a new position NFT and deploys a Stratax proxy.
+    /// @dev Position opening (leverage, swaps) is handled by the StrataxRouter.
+    /// @param to Address to mint the NFT to
+    /// @param collateralToken Address of the collateral token
+    /// @param borrowToken Address of the borrow token
+    /// @param lendingProtocolId Lending protocol identifier
+    /// @param swapProtocolId Swap protocol identifier
+    /// @return tokenId The minted NFT token ID
+    /// @return strataxProxy The deployed Stratax proxy address
+    function mintPosition(
         address to,
         address collateralToken,
         address borrowToken,
         bytes32 lendingProtocolId,
-        bytes32 swapProtocolId,
-        bool _openInitPosition,
-        bytes calldata _initTradeParams
+        bytes32 swapProtocolId
     ) public returns (uint256 tokenId, address strataxProxy) {
-        return _mintPositionByProtocolIds(
-            to, collateralToken, borrowToken, lendingProtocolId, swapProtocolId, _openInitPosition, _initTradeParams
-        );
-    }
-
-    // Deprecated compatibility overload: converts old struct params to adapter-encoded bytes.
-    function mintPositionByProtocolIds(
-        address to,
-        address collateralToken,
-        address borrowToken,
-        bytes32 lendingProtocolId,
-        bytes32 swapProtocolId,
-        bool _openInitPosition,
-        MintPositionParams memory _initParams
-    ) public returns (uint256 tokenId, address strataxProxy) {
-        bytes memory encodedInitParams;
-        if (_openInitPosition && _initParams.collateralAmount > 0) {
-            address adapterAddress = pairAdapterByProtocolIds[lendingProtocolId][swapProtocolId];
-            require(adapterAddress != address(0), "Pair adapter not configured");
-            encodedInitParams = IStrataxPositionAdapter(adapterAddress)
-                .encodeOpenPositionData(
-                    _initParams.collateralAmount, _initParams.leverage, _initParams.minSwapAmountOut, _initParams.data
-                );
-        }
-
-        return _mintPositionByProtocolIds(
-            to, collateralToken, borrowToken, lendingProtocolId, swapProtocolId, _openInitPosition, encodedInitParams
-        );
-    }
-
-    function _mintPositionByProtocolIds(
-        address to,
-        address collateralToken,
-        address borrowToken,
-        bytes32 lendingProtocolId,
-        bytes32 swapProtocolId,
-        bool _openInitPosition,
-        bytes memory _initTradeParams
-    ) internal returns (uint256 tokenId, address strataxProxy) {
         require(to != address(0), "Cannot mint to zero address");
 
         address adapterAddress = pairAdapterByProtocolIds[lendingProtocolId][swapProtocolId];
@@ -392,20 +329,7 @@ contract StrataxPositionNft is
         });
         strataxAddressToTokenId[strataxProxy] = tokenId;
 
-        if (_openInitPosition && _initTradeParams.length > 0) {
-            uint256 collateralAmount = abi.decode(_initTradeParams, (uint256));
-            require(collateralAmount > 0, "Init collateral must be > 0");
-
-            _safeMint(address(adapter), tokenId);
-            IERC20(collateralToken).safeTransferFrom(msg.sender, address(adapter), collateralAmount);
-            IERC20(collateralToken).forceApprove(strataxProxy, collateralAmount);
-
-            adapter.openPosition(tokenId, strataxProxy, _initTradeParams);
-            // the adapter must give approval to ensure the token is sent to the owner
-            _safeTransfer(address(adapter), to, tokenId, "");
-        } else {
-            _safeMint(to, tokenId);
-        }
+        _safeMint(to, tokenId);
 
         emit PositionMinted(tokenId, to, strataxProxy, collateralToken, borrowToken, swapProtocolId, lendingProtocolId);
     }

@@ -5,47 +5,27 @@ import {IUniswapV3SwapRouter} from "../../interfaces/external/IUniswapV3SwapRout
 import {IFluidVaultT1} from "../../interfaces/external/IFluidVaultT1.sol";
 import {IFluidLiquidity} from "../../interfaces/external/IFluidLiquidity.sol";
 import {IStrataxOracle} from "../../interfaces/internal/IStrataxOracle.sol";
-import {IStrataxPositionNft} from "../../interfaces/internal/IStrataxPositionNft.sol";
 import {IFeeCollector} from "../../interfaces/internal/IFeeCollector.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {StrataxCalculations} from "../../libraries/StrataxCalculations.sol";
 import {StrataxFluidLib} from "../../libraries/lending/StrataxFluidLib.sol";
 import {StrataxUniswapLib} from "../../libraries/swapping/StrataxUniswapLib.sol";
 import {StrataxCoreLib} from "../../libraries/stratax/StrataxCoreLib.sol";
+import {BaseStrataxPosition} from "./BaseStrataxPosition.sol";
 
-contract Stratax_Fluid_Uniswap is Initializable, ReentrancyGuardTransient {
+contract Stratax_Fluid_Uniswap is BaseStrataxPosition {
     using SafeERC20 for IERC20;
 
-    uint256 public constant DEFAULT_SLIPPAGE_BPS = 50;
     uint256 internal constant MAX_LEVERAGE_STEPS = 8;
     uint256 internal constant MAX_BORROW_ATTEMPTS_PER_STEP = 6;
     address internal constant FLUID_NATIVE_TOKEN = 0xEeeeeEeeeEeEeeEeEeEeeEEEeeeeEeeeeeeeEEeE;
 
-    uint256 public tokenId;
     uint256 public fluidNftId;
-    bool public isBurned;
-    address public burnedTokenOwner;
 
-    uint256 public borrowSafetyMargin;
-    uint256 public maxLeverageOffset;
-
-    IStrataxPositionNft public strataxPositionNft;
     IFluidVaultT1 public fluidVault;
     IFluidLiquidity public fluidLiquidity;
     IUniswapV3SwapRouter public uniswapRouter;
-
-    address public collateralToken;
-    address public borrowToken;
-
-    uint256 public collateralTokenDecimals;
-    uint256 public borrowTokenDecimals;
-
-    address public strataxOracle;
-    address public feeCollector;
 
     // Deprecated local accounting slots retained for storage compatibility.
     uint256 public trackedCollateral;
@@ -56,32 +36,10 @@ contract Stratax_Fluid_Uniswap is Initializable, ReentrancyGuardTransient {
 
     uint256[48] private __gap;
 
-    event LeveragePositionCreated(
-        address indexed user,
-        address collateralToken,
-        address borrowedToken,
-        uint256 totalCollateralSupplied,
-        uint256 borrowedAmount
-    );
-    event PositionUnwound(
-        address indexed user, address collateralToken, address debtToken, uint256 debtRepaid, uint256 collateralReturned
-    );
     event CollateralSupplied(address indexed user, address collateralToken, uint256 amount);
     event CollateralWithdrawn(address indexed user, address collateralToken, uint256 amount);
-    event PositionBurned(address indexed user, uint256 tokenId);
-    event BorrowSafetyMarginUpdated(uint256 newMargin, uint256 oldMargin);
-    event MaxLeverageOffsetUpdated(uint256 newOffset, uint256 oldOffset);
     event UniswapRouterUpdated(address newRouter, address oldRouter);
     event FluidVaultUpdated(address newVault, address oldVault);
-
-    modifier onlyOwner() {
-        if (isBurned) {
-            require(msg.sender == burnedTokenOwner, "Not Owner");
-        } else {
-            require(msg.sender == strataxPositionNft.ownerOf(tokenId), "Not Owner");
-        }
-        _;
-    }
 
     function initialize(
         StrataxFluidLib.PositionInitParams calldata lendingParams,
@@ -95,30 +53,11 @@ contract Stratax_Fluid_Uniswap is Initializable, ReentrancyGuardTransient {
         require(strataxParams.strataxOracle != address(0), "Invalid oracle");
         require(strataxParams.feeCollector != address(0), "Invalid fee collector");
 
+        _initBase(strataxParams, lendingParams.borrowSafetyMargin, lendingParams.maxLeverageOffset);
+
         fluidVault = IFluidVaultT1(lendingParams.fluidVault);
         fluidLiquidity = IFluidLiquidity(fluidVault.LIQUIDITY());
         uniswapRouter = IUniswapV3SwapRouter(swapParams.uniswapRouter);
-        strataxPositionNft = IStrataxPositionNft(strataxParams.strataxPositionNft);
-
-        tokenId = strataxParams.tokenId;
-        collateralToken = strataxParams.collateralToken;
-        borrowToken = strataxParams.borrowToken;
-        strataxOracle = strataxParams.strataxOracle;
-        feeCollector = strataxParams.feeCollector;
-
-        collateralTokenDecimals = IERC20Metadata(strataxParams.collateralToken).decimals();
-        borrowTokenDecimals = IERC20Metadata(strataxParams.borrowToken).decimals();
-
-        if (lendingParams.borrowSafetyMargin == 0) {
-            borrowSafetyMargin = 9900;
-        } else {
-            require(
-                lendingParams.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin"
-            );
-            borrowSafetyMargin = lendingParams.borrowSafetyMargin;
-        }
-
-        maxLeverageOffset = lendingParams.maxLeverageOffset;
     }
 
     function createLeveragedPosition(
@@ -288,63 +227,13 @@ contract Stratax_Fluid_Uniswap is Initializable, ReentrancyGuardTransient {
         emit PositionUnwound(msg.sender, collateralToken, borrowToken, repayAmount, collateralToWithdraw);
     }
 
-    function owner() public view returns (address) {
-        return strataxPositionNft.ownerOf(tokenId);
-    }
-
-    function getCurrentLeverage() public view returns (uint256 currentLeverage) {
-        (uint256 totalCollateral, uint256 totalDebt) = _getCachedPosition();
-
-        if (totalCollateral == 0) {
-            return 0;
-        }
-        if (totalDebt == 0) {
-            return StrataxCalculations.LEVERAGE_PRECISION;
-        }
-
-        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
-        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
-        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
-
-        uint256 totalCollateralValueUsd = (totalCollateral * collateralTokenPrice) / (10 ** collateralTokenDecimals);
-        uint256 totalDebtValueUsd = (totalDebt * borrowTokenPrice) / (10 ** borrowTokenDecimals);
-
-        if (totalCollateralValueUsd <= totalDebtValueUsd) {
-            return 0;
-        }
-
-        uint256 equity = totalCollateralValueUsd - totalDebtValueUsd;
-        currentLeverage = (totalCollateralValueUsd * StrataxCalculations.LEVERAGE_PRECISION) / equity;
-    }
-
-    function getPositionUsdValue() public view returns (uint256 positionValueUsd) {
-        (uint256 totalCollateral, uint256 totalDebt) = _getCachedPosition();
-
-        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
-        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
-        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
-
-        uint256 totalCollateralValueUsd = (totalCollateral * collateralTokenPrice) / (10 ** collateralTokenDecimals);
-        uint256 totalDebtValueUsd = (totalDebt * borrowTokenPrice) / (10 ** borrowTokenDecimals);
-
-        if (totalCollateralValueUsd > totalDebtValueUsd) {
-            return totalCollateralValueUsd - totalDebtValueUsd;
-        }
-        return 0;
-    }
-
-    function burnPosition(address newOwner) external onlyOwner {
-        strataxPositionNft.burn(tokenId);
-        burnedTokenOwner = newOwner;
-        isBurned = true;
-        emit PositionBurned(msg.sender, tokenId);
-    }
-
-    function recoverTokens(address token, uint256 amount) external onlyOwner {
-        require(isBurned, "Position must be burned to recover tokens");
-        IERC20(token).safeTransfer(msg.sender, amount);
+    function _getTotalCollateralAndDebt()
+        internal
+        view
+        override
+        returns (uint256 totalCollateral, uint256 totalDebt)
+    {
+        return _getCachedPosition();
     }
 
     function supplyCollateral(uint256 amount) external onlyOwner nonReentrant {
@@ -399,20 +288,6 @@ contract Stratax_Fluid_Uniswap is Initializable, ReentrancyGuardTransient {
         fluidVault = IFluidVaultT1(newVault);
         fluidLiquidity = IFluidLiquidity(fluidVault.LIQUIDITY());
         emit FluidVaultUpdated(newVault, oldVault);
-    }
-
-    function updateBorrowSafetyMargin(uint256 newMargin) external onlyOwner {
-        require(newMargin > 0 && newMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin");
-        uint256 oldMargin = borrowSafetyMargin;
-        borrowSafetyMargin = newMargin;
-        emit BorrowSafetyMarginUpdated(newMargin, oldMargin);
-    }
-
-    function updateMaxLeverageOffset(uint256 newOffset) external onlyOwner {
-        require(newOffset <= 500, "Max leverage offset too high");
-        uint256 oldOffset = maxLeverageOffset;
-        maxLeverageOffset = newOffset;
-        emit MaxLeverageOffsetUpdated(newOffset, oldOffset);
     }
 
     function _computeAdditionalDebtAmount(uint256 desiredLeverage)

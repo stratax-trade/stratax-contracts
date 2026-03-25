@@ -3,16 +3,11 @@ pragma solidity ^0.8.13;
 
 import {console} from "forge-std/Test.sol";
 import {IERC20} from "forge-std/interfaces/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {Stratax_Aave_1Inch as Stratax} from "../../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
-import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
+import {StrataxRouter} from "../../src/core/StrataxRouter.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
 import {IProtocolDataProvider} from "../../src/interfaces/external/IProtocolDataProvider.sol";
-import {IStrataxOracle} from "../../src/interfaces/internal/IStrataxOracle.sol";
-import {IFeeCollector} from "../../src/interfaces/internal/IFeeCollector.sol";
-import {IStrataxPositionAdapter} from "../../src/interfaces/internal/IStrataxPositionAdapter.sol";
-import {StrataxCalculations} from "../../src/libraries/StrataxCalculations.sol";
 import {StrataxForkTestBase} from "./Base.t.sol";
 
 /**
@@ -148,112 +143,54 @@ contract StrataxForkTest is StrataxForkTestBase {
     }
 
     function test_MintAndOpenPositionInOneCall() public {
-        /*         if (!usesSavedData) {
-                    vm.skip(true);
-                } */
-
-        // Setup for minting a new position and opening it simultaneously
+        // Setup
         address newPositionOwner = address(0x9999);
         address collateralToken = USDC;
         address borrowToken = WETH;
         uint256 collateralAmount = 2000 * 10 ** 6; // 2000 USDC
         uint256 desiredLeverage = 25_000; // 2.5x leverage
 
-        // Get collateral token decimals and prices for calculation
-        uint256 collateralTokenDecimals = IERC20Metadata(collateralToken).decimals();
-        uint256 borrowTokenDecimals = IERC20Metadata(borrowToken).decimals();
-        (, uint256 ltv,,,,,,,,) =
-            IProtocolDataProvider(AAVE_PROTOCOL_DATA_PROVIDER).getReserveConfigurationData(collateralToken);
-        uint256 collateralTokenPrice = IStrataxOracle(address(strataxOracle)).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(address(strataxOracle)).getPrice(borrowToken);
+        // Deploy router
+        StrataxRouter router = new StrataxRouter(address(strataxPositionNft));
 
-        // Calculate initial open parameters using StrataxCalculations library
-        StrataxCalculations.CalcParams memory calcParams = StrataxCalculations.CalcParams({
-            desiredLeverage: desiredLeverage,
-            collateralAmount: collateralAmount,
-            collateralTokenPrice: collateralTokenPrice,
-            borrowTokenPrice: borrowTokenPrice,
-            collateralTokenDecimals: collateralTokenDecimals,
-            borrowTokenDecimals: borrowTokenDecimals,
-            ltv: ltv,
-            borrowSafetyMargin: 9950,
-            flashLoanFeeBps: IPool(AAVE_POOL).FLASHLOAN_PREMIUM_TOTAL(),
-            strataxFeeBps: IFeeCollector(address(feeCollector)).strataxFee(),
-            maxLeverageOffset: 75
-        });
-
-        StrataxCalculations.CalcResult memory calcResult = StrataxCalculations.calculateOpenParams(calcParams);
-        uint256 flashLoanAmount = calcResult.flashLoanAmount;
-        uint256 borrowAmount = calcResult.borrowAmount;
+        // Calculate open params using the existing stratax position
+        (uint256 flashLoanAmount, uint256 borrowAmount) = stratax.calculateOpenParams(
+            Stratax.CalcOpenParams({
+                desiredLeverage: desiredLeverage,
+                collateralAmount: collateralAmount,
+                collateralTokenPrice: 0,
+                borrowTokenPrice: 0
+            })
+        );
 
         console.log("Flash loan amount:", flashLoanAmount);
         console.log("Borrow amount:", borrowAmount);
-        console.log("Stratax fee:", calcResult.strataxFee);
 
-        // For mint+open we need quote data scoped to the next proxy that will be deployed by the adapter.
-        address adapter = strataxPositionNft.pairAdapterByProtocolIds(LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
-        bytes memory lendingConfigData = strataxPositionNft.lendingConfigByProtocolId(LENDING_AAVE_V3_ID);
-        bytes memory swapConfigData = strataxPositionNft.swapConfigByProtocolId(SWAP_ONEINCH_V6_ID);
-        uint256 nextTokenId = strataxPositionNft.getTotalPositionsCreated() + 1;
-        (address beacon,) = strataxPositionNft.protocolPairConfig(LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
-        bytes memory strataxInitConfig = abi.encode(
-            beacon,
-            address(strataxPositionNft),
-            nextTokenId,
-            address(strataxOracle),
-            address(feeCollector),
-            collateralToken,
-            borrowToken
-        );
-        bytes32 deploymentSalt = strataxPositionNft.getEffectiveCallerCreate2Salt(newPositionOwner);
-        address predictedStrataxProxy = IStrataxPositionAdapter(adapter)
-            .predictDeploymentAddress(lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt);
+        // Predict proxy address via router (router is the caller to positionNft)
+        address predictedProxy =
+            router.predictNextProxyAddress(collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
 
-        // 1inch quote API often requires fromAddress to currently hold the source token.
-        // Pre-fund the predicted CREATE2 proxy so quote generation is deterministic for mint+open.
-        deal(borrowToken, predictedStrataxProxy, borrowAmount);
+        // Pre-fund predicted proxy so 1inch quote generation works
+        deal(borrowToken, predictedProxy, borrowAmount);
 
         (bytes memory swapData, uint256 expectedReturnAmount) =
-            get1inchSwapData(borrowToken, collateralToken, borrowAmount, predictedStrataxProxy);
+            get1inchSwapData(borrowToken, collateralToken, borrowAmount, predictedProxy);
 
         console.log("Expected return amount from swap:", expectedReturnAmount);
 
-        // Build direct adapter payload so mint+open does not re-run on-chain open param calculation.
-        (bytes memory mintCallData,) = AaveOneInchPositionAdapter(adapter)
-            .buildCreateLeveragedPositionCallData(
-                newPositionOwner,
-                collateralToken,
-                borrowToken,
-                LENDING_AAVE_V3_ID,
-                SWAP_ONEINCH_V6_ID,
-                collateralAmount,
-                flashLoanAmount,
-                borrowAmount,
-                0,
-                swapData
-            );
-
-        // Give the new owner the collateral
+        // Mint + open via router
         deal(collateralToken, newPositionOwner, collateralAmount);
 
-        // Mint position NFT and open position in one transaction
         vm.startPrank(newPositionOwner);
-        IERC20(collateralToken).approve(address(strataxPositionNft), collateralAmount);
+        IERC20(collateralToken).approve(address(router), collateralAmount);
 
-        (bool mintSuccess, bytes memory mintResult) = address(strataxPositionNft).call(mintCallData);
-        if (!mintSuccess) {
-            assembly {
-                revert(add(mintResult, 0x20), mload(mintResult))
-            }
-        }
-
-        (uint256 mintedTokenId, address deployedStrataxProxy) = abi.decode(mintResult, (uint256, address));
-
+        (uint256 mintedTokenId, address deployedStrataxProxy) = router.createAaveOneInchPosition(
+            collateralToken, borrowToken, collateralAmount, flashLoanAmount, borrowAmount, swapData, 0
+        );
         vm.stopPrank();
 
         // Verify the deployment
         assertTrue(deployedStrataxProxy != address(0), "Deployed address should be non-zero");
-        assertEq(mintedTokenId, nextTokenId, "Token ID should match prediction");
         assertEq(strataxPositionNft.ownerOf(mintedTokenId), newPositionOwner, "NFT should be owned by new owner");
 
         // Verify the position was opened successfully
@@ -269,22 +206,9 @@ contract StrataxForkTest is StrataxForkTestBase {
         assertTrue(totalDebt > 0, "Should have debt");
         assertTrue(healthFactor > 1e18, "Health factor should be above 1");
 
-        // Verify leverage approximates desired leverage
-        // Actual leverage = totalCollateral / (totalCollateral - totalDebt)
-        uint256 actualLeverageApprox = (totalCollateral * 10_000) / (totalCollateral - totalDebt);
-        console.log("Actual leverage (approx with precision):", actualLeverageApprox);
-
         uint256 altLeverageCalculation = Stratax(deployedStrataxProxy).getCurrentLeverage();
         console.log("Actual leverage from Stratax function:", altLeverageCalculation);
-        console.log("Collateral token balance in Stratax:", IERC20(collateralToken).balanceOf(deployedStrataxProxy));
-        console.log("Borrow token balance in Stratax:", IERC20(borrowToken).balanceOf(deployedStrataxProxy));
         console.log("Position USD value is: ", Stratax(deployedStrataxProxy).getPositionUsdValue());
-
-        /*         // Allow some variance due to swap slippage and fees
-                assertTrue(
-                    actualLeverageApprox >= desiredLeverage - 2000 && actualLeverageApprox <= desiredLeverage + 2000,
-                    "Leverage should be close to desired leverage"
-                ); */
 
         // Verify contract state
         assertEq(newStratax.collateralToken(), collateralToken, "Collateral token should match");
@@ -667,16 +591,12 @@ contract StrataxForkTest is StrataxForkTestBase {
         address trader = makeAddr("multiPositionTrader");
 
         // Create first position: USDC collateral, WETH borrow (long ETH)
-        StrataxPositionNft.MintPositionParams memory emptyParams1;
-        (uint256 tokenId1, address strataxProxy1) = strataxPositionNft.mintPositionByProtocolIds(
-            trader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams1
-        );
+        (uint256 tokenId1, address strataxProxy1) =
+            strataxPositionNft.mintPosition(trader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
 
         // Create second position: WETH collateral, USDC borrow (short ETH)
-        StrataxPositionNft.MintPositionParams memory emptyParams2;
-        (uint256 tokenId2, address strataxProxy2) = strataxPositionNft.mintPositionByProtocolIds(
-            trader, WETH, USDC, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams2
-        );
+        (uint256 tokenId2, address strataxProxy2) =
+            strataxPositionNft.mintPosition(trader, WETH, USDC, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
 
         // Verify NFTs
         assertEq(strataxPositionNft.ownerOf(tokenId1), trader);

@@ -5,18 +5,15 @@ import {IPool} from "../../interfaces/external/IPool.sol";
 import {IProtocolDataProvider} from "../../interfaces/external/IProtocolDataProvider.sol";
 import {IUniswapV3SwapRouter} from "../../interfaces/external/IUniswapV3SwapRouter.sol";
 import {IStrataxOracle} from "../../interfaces/internal/IStrataxOracle.sol";
-import {IStrataxPositionNft} from "../../interfaces/internal/IStrataxPositionNft.sol";
 import {IFeeCollector} from "../../interfaces/internal/IFeeCollector.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
-import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
 import {StrataxCalculations} from "../../libraries/StrataxCalculations.sol";
 import {StrataxAaveLib} from "../../libraries/lending/StrataxAaveLib.sol";
 import {StrataxUniswapLib} from "../../libraries/swapping/StrataxUniswapLib.sol";
 import {StrataxCoreLib} from "../../libraries/stratax/StrataxCoreLib.sol";
 import {StrataxAaveUniswapCombinedLib} from "../../libraries/combined/StrataxAaveUniswapCombinedLib.sol";
+import {BaseStrataxPosition} from "./BaseStrataxPosition.sol";
 
 /**
  * @title Stratax_Aave_Uniswap
@@ -24,7 +21,7 @@ import {StrataxAaveUniswapCombinedLib} from "../../libraries/combined/StrataxAav
  * @dev Uses Aave flash loans and Uniswap V3 exactInputSingle swaps.
  *      Opening params are computed internally from desired leverage.
  */
-contract Stratax_Aave_Uniswap is Initializable, ReentrancyGuardTransient {
+contract Stratax_Aave_Uniswap is BaseStrataxPosition {
     using SafeERC20 for IERC20;
 
     enum OperationType {
@@ -52,59 +49,19 @@ contract Stratax_Aave_Uniswap is Initializable, ReentrancyGuardTransient {
     }
 
     uint256 public constant VARIABLE_DEBT = 2;
-    uint256 public constant DEFAULT_SLIPPAGE_BPS = 50;
 
-    uint256 public tokenId;
-    bool public isBurned;
-    address public burnedTokenOwner;
-
-    uint256 public borrowSafetyMargin;
-    uint256 public maxLeverageOffset;
-
-    IStrataxPositionNft public strataxPositionNft;
     IPool public aavePool;
     IProtocolDataProvider public aaveDataProvider;
     IUniswapV3SwapRouter public uniswapRouter;
-
-    address public collateralToken;
-    address public borrowToken;
-
-    uint256 public collateralTokenDecimals;
-    uint256 public borrowTokenDecimals;
-
-    address public strataxOracle;
-    address public feeCollector;
 
     uint256 public flashLoanFeeBps;
 
     uint256[50] private __gap;
 
-    event LeveragePositionCreated(
-        address indexed user,
-        address collateralToken,
-        address borrowedToken,
-        uint256 totalCollateralSupplied,
-        uint256 borrowedAmount
-    );
-    event PositionUnwound(
-        address indexed user, address collateralToken, address debtToken, uint256 debtRepaid, uint256 collateralReturned
-    );
     event CollateralSupplied(address indexed user, address collateralToken, uint256 amount, uint256 healthFactor);
     event CollateralWithdrawn(address indexed user, address collateralToken, uint256 amount, uint256 healthFactor);
-    event PositionBurned(address indexed user, uint256 tokenId);
     event FlashLoanFeeUpdated(uint256 newFeeBps, uint256 oldFeeBps);
-    event BorrowSafetyMarginUpdated(uint256 newMargin, uint256 oldMargin);
-    event MaxLeverageOffsetUpdated(uint256 newOffset, uint256 oldOffset);
     event UniswapRouterUpdated(address newRouter, address oldRouter);
-
-    modifier onlyOwner() {
-        if (isBurned) {
-            require(msg.sender == burnedTokenOwner, "Not Owner");
-        } else {
-            require(msg.sender == strataxPositionNft.ownerOf(tokenId), "Not Owner");
-        }
-        _;
-    }
 
     function initialize(
         StrataxAaveLib.PositionInitParams calldata lendingParams,
@@ -117,31 +74,12 @@ contract Stratax_Aave_Uniswap is Initializable, ReentrancyGuardTransient {
         require(strataxParams.strataxOracle != address(0), "Invalid oracle");
         require(strataxParams.feeCollector != address(0), "Invalid fee collector");
 
+        _initBase(strataxParams, lendingParams.borrowSafetyMargin, lendingParams.maxLeverageOffset);
+
         aavePool = IPool(lendingParams.aavePool);
         aaveDataProvider = IProtocolDataProvider(lendingParams.aaveDataProvider);
         uniswapRouter = IUniswapV3SwapRouter(swapParams.uniswapRouter);
-        strataxPositionNft = IStrataxPositionNft(strataxParams.strataxPositionNft);
-
-        tokenId = strataxParams.tokenId;
-        collateralToken = strataxParams.collateralToken;
-        borrowToken = strataxParams.borrowToken;
-        strataxOracle = strataxParams.strataxOracle;
-        feeCollector = strataxParams.feeCollector;
-
         flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL();
-        maxLeverageOffset = lendingParams.maxLeverageOffset;
-
-        collateralTokenDecimals = IERC20Metadata(strataxParams.collateralToken).decimals();
-        borrowTokenDecimals = IERC20Metadata(strataxParams.borrowToken).decimals();
-
-        if (lendingParams.borrowSafetyMargin == 0) {
-            borrowSafetyMargin = 9900;
-        } else {
-            require(
-                lendingParams.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin"
-            );
-            borrowSafetyMargin = lendingParams.borrowSafetyMargin;
-        }
     }
 
     /**
@@ -503,70 +441,16 @@ contract Stratax_Aave_Uniswap is Initializable, ReentrancyGuardTransient {
         }
     }
 
-    function owner() public view returns (address) {
-        return strataxPositionNft.ownerOf(tokenId);
-    }
-
-    function getCurrentLeverage() public view returns (uint256 currentLeverage) {
+    function _getTotalCollateralAndDebt()
+        internal
+        view
+        override
+        returns (uint256 totalCollateral, uint256 totalDebt)
+    {
         (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
         (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
-
-        uint256 aTokenBalance = IERC20(aTokenCollateral).balanceOf(address(this));
-        uint256 debtTokenAmount = IERC20(variableDebtToken).balanceOf(address(this));
-
-        if (aTokenBalance == 0) {
-            return 0;
-        }
-        if (debtTokenAmount == 0) {
-            return StrataxCalculations.LEVERAGE_PRECISION;
-        }
-
-        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
-        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
-        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
-
-        uint256 totalCollateralValueUsd = (aTokenBalance * collateralTokenPrice) / (10 ** collateralTokenDecimals);
-        uint256 totalDebtValueUsd = (debtTokenAmount * borrowTokenPrice) / (10 ** borrowTokenDecimals);
-
-        uint256 equity = totalCollateralValueUsd - totalDebtValueUsd;
-        require(equity > 0, "Invalid position: debt exceeds collateral");
-
-        currentLeverage = (totalCollateralValueUsd * StrataxCalculations.LEVERAGE_PRECISION) / equity;
-    }
-
-    function getPositionUsdValue() public view returns (uint256 positionValueUsd) {
-        (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
-        (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
-
-        uint256 aTokenBalance = IERC20(aTokenCollateral).balanceOf(address(this));
-        uint256 debtTokenAmount = IERC20(variableDebtToken).balanceOf(address(this));
-
-        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
-        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
-        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
-
-        uint256 totalCollateralValueUsd = (aTokenBalance * collateralTokenPrice) / (10 ** collateralTokenDecimals);
-        uint256 totalDebtValueUsd = (debtTokenAmount * borrowTokenPrice) / (10 ** borrowTokenDecimals);
-
-        if (totalCollateralValueUsd >= totalDebtValueUsd) {
-            positionValueUsd = totalCollateralValueUsd - totalDebtValueUsd;
-        } else {
-            positionValueUsd = 0;
-        }
-    }
-
-    function burnPosition(address newOwner) external onlyOwner {
-        strataxPositionNft.burn(tokenId);
-        burnedTokenOwner = newOwner;
-        isBurned = true;
-        emit PositionBurned(msg.sender, tokenId);
-    }
-
-    function recoverTokens(address token, uint256 amount) external onlyOwner {
-        require(isBurned, "Position must be burned to recover tokens");
-        IERC20(token).safeTransfer(msg.sender, amount);
+        totalCollateral = IERC20(aTokenCollateral).balanceOf(address(this));
+        totalDebt = IERC20(variableDebtToken).balanceOf(address(this));
     }
 
     function supplyCollateral(uint256 amount) external onlyOwner {
@@ -622,19 +506,5 @@ contract Stratax_Aave_Uniswap is Initializable, ReentrancyGuardTransient {
         address oldRouter = address(uniswapRouter);
         uniswapRouter = IUniswapV3SwapRouter(newRouter);
         emit UniswapRouterUpdated(newRouter, oldRouter);
-    }
-
-    function updateBorrowSafetyMargin(uint256 newMargin) external onlyOwner {
-        require(newMargin > 0 && newMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin");
-        uint256 oldMargin = borrowSafetyMargin;
-        borrowSafetyMargin = newMargin;
-        emit BorrowSafetyMarginUpdated(newMargin, oldMargin);
-    }
-
-    function updateMaxLeverageOffset(uint256 newOffset) external onlyOwner {
-        require(newOffset <= 500, "Max leverage offset too high");
-        uint256 oldOffset = maxLeverageOffset;
-        maxLeverageOffset = newOffset;
-        emit MaxLeverageOffsetUpdated(newOffset, oldOffset);
     }
 }

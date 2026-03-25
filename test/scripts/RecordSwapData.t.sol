@@ -113,10 +113,8 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         strataxConfigManager.setPlatformConfig(lendingProtocolId, swapProtocolId, lendingData, swapData);
 
         // Mint position NFT which deploys Stratax proxy
-        StrataxPositionNft.MintPositionParams memory emptyParams;
-        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, lendingProtocolId, swapProtocolId, false, emptyParams
-        );
+        (uint256 _tokenId, address strataxProxy) =
+            strataxPositionNft.mintPosition(ownerTrader, USDC, WETH, lendingProtocolId, swapProtocolId);
         tokenId = _tokenId;
         stratax = Stratax(strataxProxy);
     }
@@ -251,10 +249,8 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         vm.stopPrank();
 
         // Re-mint a fresh USDC/WETH position for 20k leverage unwind variants.
-        StrataxPositionNft.MintPositionParams memory emptyParams1;
-        (uint256 tokenId20k, address strataxProxy20k) = strataxPositionNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams1
-        );
+        (uint256 tokenId20k, address strataxProxy20k) =
+            strataxPositionNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         Stratax stratax20k = Stratax(strataxProxy20k);
 
         deal(USDC, ownerTrader, collateral1000);
@@ -275,10 +271,8 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
         vm.stopPrank();
 
         // Fresh USDC/WETH position for 25k leverage unwind-with-slippage variant.
-        StrataxPositionNft.MintPositionParams memory emptyParams2;
-        (, address strataxProxy25k) = strataxPositionNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams2
-        );
+        (, address strataxProxy25k) =
+            strataxPositionNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         Stratax stratax25k = Stratax(strataxProxy25k);
 
         deal(USDC, ownerTrader, collateral1000);
@@ -295,10 +289,8 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
 
         // test_MultiplePositionsSameOwner second position (WETH collateral / USDC borrow)
         address multiTrader = address(0xBEEF);
-        StrataxPositionNft.MintPositionParams memory emptyParams3;
-        (, address strataxProxy2) = strataxPositionNft.mintPositionByProtocolIds(
-            multiTrader, WETH, USDC, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams3
-        );
+        (, address strataxProxy2) =
+            strataxPositionNft.mintPosition(multiTrader, WETH, USDC, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         Stratax stratax2 = Stratax(strataxProxy2);
 
         (, uint256 borrowReversePair) = stratax2.calculateOpenParams(

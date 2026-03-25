@@ -71,7 +71,7 @@ contract StrataxUnitTest is BaseStrataxTest {
         assertEq(address(strataxPositionNft), address(strataxPositionNftProxy), "NFT proxy mismatch");
     }
 
-    function test_MintPositionByProtocolIds_DeploysPosition() public {
+    function test_MintPosition_DeploysPosition() public {
         address minter = address(0x1234);
         address collateralToken = USDC;
         address borrowToken = WETH;
@@ -81,9 +81,8 @@ contract StrataxUnitTest is BaseStrataxTest {
 
         // Mint the position NFT from the specified minter address
         vm.prank(minter);
-        StrataxPositionNft.MintPositionParams memory emptyParams;
-        (uint256 actualTokenId, address actualStrataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            minter, collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
+        (uint256 actualTokenId, address actualStrataxProxy) = strataxPositionNft.mintPosition(
+            minter, collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID
         );
 
         console.log("Actual Stratax proxy address:", actualStrataxProxy);
@@ -144,10 +143,8 @@ contract StrataxUnitTest is BaseStrataxTest {
         StrataxPositionNft testNft = deployTestStrataxPositionNft(address(this), feeCollectorMock);
 
         // Mint position NFT
-        StrataxPositionNft.MintPositionParams memory emptyParams;
-        (, address testStrataxProxy) = testNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
-        );
+        (, address testStrataxProxy) =
+            testNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         Stratax testStratax = Stratax(testStrataxProxy);
 
         // Setup Aave token mocks for this Stratax proxy
@@ -247,11 +244,9 @@ contract StrataxUnitTest is BaseStrataxTest {
             StrataxPositionNft testNft = deployTestStrataxPositionNft(address(this), feeCollectorMock);
 
             // Mint position NFT
-            StrataxPositionNft.MintPositionParams memory emptyParams;
             vm.prank(ownerTrader);
-            (, address testStrataxProxy) = testNft.mintPositionByProtocolIds(
-                ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
-            );
+            (, address testStrataxProxy) =
+                testNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
 
             // Setup Aave token mocks for deployed Stratax proxy
             setupAaveTokenMocks(testStrataxProxy);
@@ -363,10 +358,8 @@ contract StrataxUnitTest is BaseStrataxTest {
         StrataxPositionNft testNft = deployTestStrataxPositionNft(address(this), feeCollectorMock);
 
         // Mint position NFT
-        StrataxPositionNft.MintPositionParams memory emptyParams;
-        (, address testStrataxProxy) = testNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
-        );
+        (, address testStrataxProxy) =
+            testNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         Stratax testStratax = Stratax(testStrataxProxy);
 
         // Setup Aave token mocks for this Stratax proxy

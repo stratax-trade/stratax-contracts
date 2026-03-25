@@ -162,10 +162,8 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
      * @notice Mints the initial position NFT (can be overridden to skip)
      */
     function mintInitialPosition() internal virtual {
-        StrataxPositionNft.MintPositionParams memory emptyParams;
-        (uint256 _tokenId, address strataxProxy) = strataxPositionNft.mintPositionByProtocolIds(
-            ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID, false, emptyParams
-        );
+        (uint256 _tokenId, address strataxProxy) =
+            strataxPositionNft.mintPosition(ownerTrader, USDC, WETH, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
         tokenId = _tokenId;
         stratax = Stratax(strataxProxy);
     }

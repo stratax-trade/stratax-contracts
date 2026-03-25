@@ -6,18 +6,15 @@ import {IPool} from "../../interfaces/external/IPool.sol";
 import {IAggregationRouter} from "../../interfaces/external/IAggregationRouter.sol";
 import {IProtocolDataProvider} from "../../interfaces/external/IProtocolDataProvider.sol";
 import {IStrataxOracle} from "../../interfaces/internal/IStrataxOracle.sol";
-import {IStrataxPositionNft} from "../../interfaces/internal/IStrataxPositionNft.sol";
 import {IFeeCollector} from "../../interfaces/internal/IFeeCollector.sol";
-import {Initializable} from "@openzeppelin/contracts-upgradeable/proxy/utils/Initializable.sol";
 import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import {IERC20Metadata} from "@openzeppelin/contracts/token/ERC20/extensions/IERC20Metadata.sol";
 import {SafeERC20} from "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import {StrataxCalculations} from "../../libraries/StrataxCalculations.sol";
 import {StrataxAaveLib} from "../../libraries/lending/StrataxAaveLib.sol";
 import {Stratax1InchLib} from "../../libraries/swapping/Stratax1InchLib.sol";
 import {StrataxCoreLib} from "../../libraries/stratax/StrataxCoreLib.sol";
 import {StrataxAave1InchCombinedLib} from "../../libraries/combined/StrataxAave1InchCombinedLib.sol";
-import {ReentrancyGuardTransient} from "@openzeppelin/contracts/utils/ReentrancyGuardTransient.sol";
+import {BaseStrataxPosition} from "./BaseStrataxPosition.sol";
 
 /*
   _________ __                 __
@@ -50,7 +47,7 @@ Author: Stratax
  * there are functions to manage the position's health with repay, borrow
  *
  */
-contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
+contract Stratax_Aave_1Inch is BaseStrataxPosition {
     /* @dev note are and debugging area */
     //
     //
@@ -122,30 +119,6 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
     /// @notice Aave variable debt interest rate mode identifier
     uint256 public constant VARIABLE_DEBT = 2;
 
-    /// @notice Default unwind slippage buffer in basis points (50 = 0.50%)
-    uint256 public constant DEFAULT_SLIPPAGE_BPS = 50;
-
-    /// @notice tokenId which represents this contract in the StrataxPositionNft
-    uint256 public tokenId;
-
-    /// @notice if the token has been burned
-    bool public isBurned;
-
-    /// @notice owner of the the burned token
-    address public burnedTokenOwner;
-
-    /// @notice Safety margin for borrow calculations (9900 = 99% of max LTV)
-    /// @dev This ensures positions have a healthy buffer and don't immediately risk liquidation
-    uint256 public borrowSafetyMargin; // % of max LTV for Aave collateral i.e. 9900 means 99% of max LTV
-
-    /// @notice Offset from maximum leverage with 4 decimals (e.g., 75 = 0.75%)
-    /// @dev When nearing max leverage, slippage or price fluctuation can cause reverts.
-    ///      This offset provides a safety buffer by reducing the effective LTV used in calculations.
-    uint256 public maxLeverageOffset; // default is 75 which means 0.75% of the borrow safety margin can be used for leverage
-
-    /// @notice StrataxPositionNft contract for tracking ownership
-    IStrataxPositionNft public strataxPositionNft;
-
     /// @notice Aave lending pool interface for flash loans and lending operations
     IPool public aavePool;
 
@@ -154,24 +127,6 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
 
     /// @notice 1inch aggregation router interface for token swaps
     IAggregationRouter public oneInchRouter;
-
-    /// @notice Collateral token address for this position
-    address public collateralToken;
-
-    /// @notice Borrow token address for this position
-    address public borrowToken;
-
-    /// @notice Decimals of the collateral token
-    uint256 public collateralTokenDecimals;
-
-    /// @notice Decimals of the borrow token
-    uint256 public borrowTokenDecimals;
-
-    /// @notice Address of the Stratax price oracle contract
-    address public strataxOracle;
-
-    /// @notice Address for the fee collector which takes a opening and closing fee
-    address public feeCollector;
 
     /// @notice Flash loan fee in basis points (e.g., 9 = 0.09%)
     uint256 public flashLoanFeeBps;
@@ -184,41 +139,12 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
                                 EVENTS
     //////////////////////////////////////////////////////////////*/
 
-    /// @notice Emitted when a new leveraged position is created
-    /// @param user Address of the user who created the position
-    /// @param collateralToken Address of the collateral token
-    /// @param borrowedToken Address of the borrowed token
-    /// @param totalCollateralSupplied Total amount of collateral supplied to Aave
-    /// @param borrowedAmount Amount borrowed from Aave
-    event LeveragePositionCreated(
-        address indexed user,
-        address collateralToken,
-        address borrowedToken,
-        uint256 totalCollateralSupplied,
-        uint256 borrowedAmount
-    );
-
-    /// @notice Emitted when a leveraged position is unwound
-    /// @param user Address of the user whose position was unwound
-    /// @param collateralToken Address of the collateral token
-    /// @param debtToken Address of the debt token
-    /// @param debtRepaid Amount of debt repaid
-    /// @param collateralReturned Amount of collateral withdrawn from Aave
-    event PositionUnwound(
-        address indexed user, address collateralToken, address debtToken, uint256 debtRepaid, uint256 collateralReturned
-    );
-
     /// @notice Emitted when collateral is added to a position
     /// @param user Address of the user who supplied collateral
     /// @param collateralToken Address of the collateral token
     /// @param amount Amount of collateral supplied
     /// @param healthFactor Health factor after supplying collateral
     event CollateralSupplied(address indexed user, address collateralToken, uint256 amount, uint256 healthFactor);
-
-    /// @notice Emitted when the max leverage offset is updated
-    /// @param newOffset The new max leverage offset
-    /// @param oldOffset The previous max leverage offset
-    event MaxLeverageOffsetUpdated(uint256 newOffset, uint256 oldOffset);
 
     /// @notice Emitted when the 1inch router is updated
     /// @param newRouter Address of the new 1inch router
@@ -236,11 +162,6 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
     /// @param newFeeBps The new flash loan fee in basis points
     /// @param oldFeeBps The previous flash loan fee in basis points
     event FlashLoanFeeUpdated(uint256 newFeeBps, uint256 oldFeeBps);
-
-    /// @notice Emitted when the borrow safety margin is updated
-    /// @param newMargin The new borrow safety margin
-    /// @param oldMargin The previous borrow safety margin
-    event BorrowSafetyMarginUpdated(uint256 newMargin, uint256 oldMargin);
 
     /// @notice Emitted when a position is partially unwound
     /// @param user Address of the user whose position was partially unwound
@@ -281,25 +202,6 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
     /// @param user Address of the user whose position was closed
     event PositionClosed(address indexed user);
 
-    /// @notice Emitted when a position is burned
-    /// @param user Address of the user whose position was burned
-    /// @param tokenId The ID of the burned position
-    event PositionBurned(address indexed user, uint256 tokenId);
-
-    /*//////////////////////////////////////////////////////////////
-                              MODIFIERS
-    //////////////////////////////////////////////////////////////*/
-
-    /// @notice Restricts function access to contract owner only
-    modifier onlyOwner() {
-        if (isBurned) {
-            require(msg.sender == burnedTokenOwner, "Not Owner");
-        } else {
-            require(msg.sender == strataxPositionNft.ownerOf(tokenId), "Not Owner");
-        }
-        _;
-    }
-
     /*//////////////////////////////////////////////////////////////
                             INITIALIZER
     //////////////////////////////////////////////////////////////*/
@@ -314,31 +216,12 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
         Stratax1InchLib.InitParams calldata swapParams,
         StrataxCoreLib.InitParams calldata strataxParams
     ) external initializer {
+        _initBase(strataxParams, lendingParams.borrowSafetyMargin, lendingParams.maxLeverageOffset);
+
         aavePool = IPool(lendingParams.aavePool);
         aaveDataProvider = IProtocolDataProvider(lendingParams.aaveDataProvider);
         oneInchRouter = IAggregationRouter(swapParams.oneInchRouter);
-        strataxPositionNft = IStrataxPositionNft(strataxParams.strataxPositionNft);
-        tokenId = strataxParams.tokenId;
-        collateralToken = strataxParams.collateralToken;
-        borrowToken = strataxParams.borrowToken;
-        strataxOracle = strataxParams.strataxOracle;
-        flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL(); // Default 0.05% Aave flash loan fee
-        feeCollector = strataxParams.feeCollector;
-        maxLeverageOffset = lendingParams.maxLeverageOffset;
-
-        // Fetch and store token decimals
-        collateralTokenDecimals = IERC20Metadata(strataxParams.collateralToken).decimals();
-        borrowTokenDecimals = IERC20Metadata(strataxParams.borrowToken).decimals();
-
-        // Set borrow safety margin with default if not provided
-        if (lendingParams.borrowSafetyMargin == 0) {
-            borrowSafetyMargin = 9900; // Default to 99% of max LTV
-        } else {
-            require(
-                lendingParams.borrowSafetyMargin < StrataxCalculations.BORROW_SAFETY_PRECISION, "Invalid safety margin"
-            );
-            borrowSafetyMargin = lendingParams.borrowSafetyMargin;
-        }
+        flashLoanFeeBps = aavePool.FLASHLOAN_PREMIUM_TOTAL();
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -1025,14 +908,6 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
     //////////////////////////////////////////////////////////////*/
 
     /**
-     * @notice Returns the owner of this Stratax position contract
-     * @return The address of the owner (NFT holder)
-     */
-    function owner() public view returns (address) {
-        return strataxPositionNft.ownerOf(tokenId);
-    }
-
-    /**
      * @notice public wrapper around the internal function
      * @dev considers stratax fee and flashloan fee when verifying leverage
      * @param _leverage leverage of the position
@@ -1084,122 +959,9 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
         return _getFreeCollateral(_collateralTokenPrice, _borrowTokenPrice, _ltv);
     }
 
-    /**
-     * @notice Returns the current leverage of the position
-     * @dev Leverage = Total Collateral Value / Equity
-     *      Where Equity = Total Collateral Value - Total Debt Value
-     *      Uses StrataxOracle for price feeds (8 decimals)
-     * @return currentLeverage The current leverage with 4 decimals (e.g., 30000 = 3x)
-     *         Returns 0 if there is no position (no collateral)
-     */
-    function getCurrentLeverage() public view returns (uint256 currentLeverage) {
-        // Get token addresses
-        (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
-
-        //get borrow token addresses
-        (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
-
-        // Get token balances
-        uint256 aTokenBalance = IERC20(aTokenCollateral).balanceOf(address(this));
-        uint256 debtTokenAmount = IERC20(variableDebtToken).balanceOf(address(this));
-
-        // If no collateral, return 0 leverage
-        if (aTokenBalance == 0) {
-            return 0;
-        }
-
-        // If no debt, leverage is 1x
-        if (debtTokenAmount == 0) {
-            return StrataxCalculations.LEVERAGE_PRECISION; // 10000 = 1x
-        }
-
-        // Get prices from oracle (8 decimals)
-        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
-        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
-        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
-
-        // Calculate total collateral value in USD (with 8 decimals)
-        // totalCollateralValueUsd = (aTokenBalance * collateralPrice) / (10^collateralDecimals)
-        uint256 totalCollateralValueUsd = (aTokenBalance * collateralTokenPrice) / (10 ** collateralTokenDecimals);
-
-        // Calculate total debt value in USD (with 8 decimals)
-        // totalDebtValueUsd = (debtTokenAmount * borrowPrice) / (10^borrowDecimals)
-        uint256 totalDebtValueUsd = (debtTokenAmount * borrowTokenPrice) / (10 ** borrowTokenDecimals);
-
-        // Leverage = Total Collateral / (Total Collateral - Total Debt)
-        uint256 equity = totalCollateralValueUsd - totalDebtValueUsd;
-
-        // Prevent division by zero (shouldn't happen if totalDebtValueUsd < totalCollateralValueUsd)
-        require(equity > 0, "Invalid position: debt exceeds collateral");
-
-        currentLeverage = (totalCollateralValueUsd * StrataxCalculations.LEVERAGE_PRECISION) / equity;
-
-        return currentLeverage;
-    }
-
-    /**
-     * @notice Returns the current position value in USD (collateral value - debt value)
-     * @dev Uses StrataxOracle for price feeds (8 decimals)
-     * @return positionValueUsd The current position value in USD with 8 decimals
-     *         Returns 0 if position is underwater (debt value >= collateral value)
-     */
-    function getPositionUsdValue() public view returns (uint256 positionValueUsd) {
-        // Get token addresses
-        (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
-        (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
-
-        // Get token balances
-        uint256 aTokenBalance = IERC20(aTokenCollateral).balanceOf(address(this));
-        uint256 debtTokenAmount = IERC20(variableDebtToken).balanceOf(address(this));
-
-        // Get prices from oracle (8 decimals)
-        uint256 collateralTokenPrice = IStrataxOracle(strataxOracle).getPrice(collateralToken);
-        uint256 borrowTokenPrice = IStrataxOracle(strataxOracle).getPrice(borrowToken);
-        require(collateralTokenPrice > 0, "Collateral token price must be > 0");
-        require(borrowTokenPrice > 0, "Borrow token price must be > 0");
-
-        // Calculate total collateral value in USD (with 8 decimals)
-        uint256 totalCollateralValueUsd = (aTokenBalance * collateralTokenPrice) / (10 ** collateralTokenDecimals);
-
-        // Calculate total debt value in USD (with 8 decimals)
-        uint256 totalDebtValueUsd = (debtTokenAmount * borrowTokenPrice) / (10 ** borrowTokenDecimals);
-
-        if (totalCollateralValueUsd >= totalDebtValueUsd) {
-            positionValueUsd = totalCollateralValueUsd - totalDebtValueUsd;
-        } else {
-            positionValueUsd = 0;
-        }
-    }
-
     /*//////////////////////////////////////////////////////////////
                     OnlyOwner and Utility Functions
     //////////////////////////////////////////////////////////////*/
-
-    /**
-     * @notice Burns the position NFT and marks the position as closed
-     * @dev Can only be called by the owner (NFT holder) and only if the position is safe to close
-     *      Position must be fully unwound (no debt) before burning
-     */
-    function burnPosition(address newOwner) external onlyOwner {
-        // Mark the position as burned in the NFT contract
-        strataxPositionNft.burn(tokenId);
-        // Update the burned token owner
-        burnedTokenOwner = newOwner;
-        isBurned = true;
-        // Emit event for off-chain tracking
-        emit PositionBurned(msg.sender, tokenId);
-    }
-
-    /**
-     * @notice Emergency function to recover tokens sent to contract
-     * @param _token The token address to recover
-     * @param _amount The amount to recover
-     */
-    function recoverTokens(address _token, uint256 _amount) external onlyOwner {
-        require(isBurned, "Position must be burned to recover tokens");
-        IERC20(_token).safeTransfer(msg.sender, _amount);
-    }
 
     /**
      * @notice Supplies additional collateral to an existing position to improve health factor
@@ -1306,21 +1068,6 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
     }
 
     /**
-     * @notice Updates the maximum leverage offset used in max leverage calculations
-     * @dev Allows owner to adjust the max leverage offset to be more or less conservative based on market conditions.
-     *      The offset is used to reduce the effective LTV when calculating max leverage,
-     *      providing a safety buffer to prevent positions from being too close to the liquidation threshold.
-     *      The offset is expressed with 4 decimal precision (e.g., 75 = 0.75%).
-     * @param _newOffset The new max leverage offset (must be <= 500, i.e., 5%)
-     */
-    function updateMaxLeverageOffset(uint256 _newOffset) external onlyOwner {
-        require(_newOffset <= 500, "Max leverage offset too high"); // max 5% offset
-        uint256 oldOffset = maxLeverageOffset;
-        maxLeverageOffset = _newOffset;
-        emit MaxLeverageOffsetUpdated(_newOffset, oldOffset);
-    }
-
-    /**
      * @notice Extracts the function selector from encoded calldata
      * @dev Useful for debugging and verifying 1inch swap data
      * @param _calldata The encoded calldata
@@ -1332,5 +1079,21 @@ contract Stratax_Aave_1Inch is Initializable, ReentrancyGuardTransient {
             selector := mload(add(_calldata, 32))
         }
         return selector;
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                    OVERRIDE: BaseStrataxPosition
+    //////////////////////////////////////////////////////////////*/
+
+    function _getTotalCollateralAndDebt()
+        internal
+        view
+        override
+        returns (uint256 totalCollateral, uint256 totalDebt)
+    {
+        (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
+        (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
+        totalCollateral = IERC20(aTokenCollateral).balanceOf(address(this));
+        totalDebt = IERC20(variableDebtToken).balanceOf(address(this));
     }
 }
