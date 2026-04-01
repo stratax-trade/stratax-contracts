@@ -82,21 +82,22 @@ contract StrataxRouter is IERC721Receiver, ReentrancyGuard {
         address borrowToken,
         uint256 collateralAmount,
         uint256 desiredLeverage,
-        uint24 poolFee,
+        address[] calldata swapPath,
+        uint24[] calldata swapFees,
         uint256 minAmountOut
     ) external nonReentrant returns (uint256 tokenId, address strataxProxy) {
         // Mint NFT to router (making router the temporary owner)
-        (tokenId, strataxProxy) =
-            positionNft.mintPosition(address(this), collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID);
+        (tokenId, strataxProxy) = positionNft.mintPosition(
+            address(this), collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID
+        );
 
         // Transfer collateral from user, approve the proxy
         IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
         IERC20(collateralToken).forceApprove(strataxProxy, collateralAmount);
 
         // Open position (router is owner via NFT)
-        Stratax_Aave_Uniswap(strataxProxy).createLeveragedPosition(
-            desiredLeverage, collateralAmount, poolFee, minAmountOut
-        );
+        Stratax_Aave_Uniswap(strataxProxy)
+            .createLeveragedPosition(desiredLeverage, collateralAmount, swapPath, swapFees, minAmountOut);
 
         // Transfer NFT to user
         positionNft.safeTransferFrom(address(this), msg.sender, tokenId);
@@ -111,15 +112,15 @@ contract StrataxRouter is IERC721Receiver, ReentrancyGuard {
         uint24 poolFee,
         uint256 minAmountOut
     ) external nonReentrant returns (uint256 tokenId, address strataxProxy) {
-        (tokenId, strataxProxy) =
-            positionNft.mintPosition(address(this), collateralToken, borrowToken, LENDING_FLUID_V1_ID, SWAP_UNISWAP_V3_ID);
+        (tokenId, strataxProxy) = positionNft.mintPosition(
+            address(this), collateralToken, borrowToken, LENDING_FLUID_V1_ID, SWAP_UNISWAP_V3_ID
+        );
 
         IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
         IERC20(collateralToken).forceApprove(strataxProxy, collateralAmount);
 
-        Stratax_Fluid_Uniswap(strataxProxy).createLeveragedPosition(
-            desiredLeverage, collateralAmount, poolFee, minAmountOut
-        );
+        Stratax_Fluid_Uniswap(strataxProxy)
+            .createLeveragedPosition(desiredLeverage, collateralAmount, poolFee, minAmountOut);
 
         positionNft.safeTransferFrom(address(this), msg.sender, tokenId);
     }
@@ -143,15 +144,15 @@ contract StrataxRouter is IERC721Receiver, ReentrancyGuard {
         bytes calldata oneInchSwapData,
         uint256 minAmountOut
     ) external nonReentrant returns (uint256 tokenId, address strataxProxy) {
-        (tokenId, strataxProxy) =
-            positionNft.mintPosition(address(this), collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID);
+        (tokenId, strataxProxy) = positionNft.mintPosition(
+            address(this), collateralToken, borrowToken, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID
+        );
 
         IERC20(collateralToken).safeTransferFrom(msg.sender, address(this), collateralAmount);
         IERC20(collateralToken).forceApprove(strataxProxy, collateralAmount);
 
-        Stratax_Aave_1Inch(strataxProxy).createLeveragedPosition(
-            flashLoanAmount, collateralAmount, borrowAmount, oneInchSwapData, minAmountOut
-        );
+        Stratax_Aave_1Inch(strataxProxy)
+            .createLeveragedPosition(flashLoanAmount, collateralAmount, borrowAmount, oneInchSwapData, minAmountOut);
 
         positionNft.safeTransferFrom(address(this), msg.sender, tokenId);
     }
@@ -163,18 +164,22 @@ contract StrataxRouter is IERC721Receiver, ReentrancyGuard {
     /// @notice Unwinds an Aave+Uniswap position. Calculates params on-chain.
     /// @param tokenId The position NFT token ID
     /// @param debtToRepay Amount of debt to repay (use type(uint256).max for full unwind)
-    /// @param poolFee Uniswap V3 pool fee tier
+    /// @param swapPath Ordered token array for the Uniswap V3 swap path
+    /// @param swapFees Uniswap V3 fee tiers for each hop (length == swapPath.length - 1)
     /// @param minReturnAmount Minimum swap output (slippage protection)
-    function unwindAaveUniswapPosition(uint256 tokenId, uint256 debtToRepay, uint24 poolFee, uint256 minReturnAmount)
-        external
-        nonReentrant
-    {
+    function unwindAaveUniswapPosition(
+        uint256 tokenId,
+        uint256 debtToRepay,
+        address[] calldata swapPath,
+        uint24[] calldata swapFees,
+        uint256 minReturnAmount
+    ) external nonReentrant {
         _validateAndTakeNft(tokenId, SWAP_UNISWAP_V3_ID);
 
         address proxy = positionNft.getStrataxProxy(tokenId);
         Stratax_Aave_Uniswap position = Stratax_Aave_Uniswap(proxy);
         (uint256 collateralToWithdraw, uint256 debtAmount,) = position.calculateUnwindParams(debtToRepay);
-        position.unwindPosition(collateralToWithdraw, debtAmount, poolFee, minReturnAmount);
+        position.unwindPosition(collateralToWithdraw, debtAmount, swapPath, swapFees, minReturnAmount);
 
         _returnNft(tokenId);
     }
@@ -322,9 +327,8 @@ contract StrataxRouter is IERC721Receiver, ReentrancyGuard {
 
         bytes32 deploymentSalt = positionNft.getEffectiveCallerCreate2Salt(address(this));
 
-        predictedProxy = IStrataxPositionAdapter(adapter).predictDeploymentAddress(
-            lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt
-        );
+        predictedProxy = IStrataxPositionAdapter(adapter)
+            .predictDeploymentAddress(lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt);
     }
 
     /*//////////////////////////////////////////////////////////////

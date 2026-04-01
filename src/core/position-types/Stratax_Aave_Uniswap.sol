@@ -35,7 +35,7 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         address borrowToken;
         uint256 borrowAmount;
         uint256 strataxFeeAmount;
-        uint24 poolFee;
+        bytes swapPath;
         uint256 minReturnAmount;
     }
 
@@ -44,17 +44,23 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         uint256 collateralToWithdraw;
         address debtToken;
         uint256 debtAmount;
-        uint24 poolFee;
+        bytes swapPath;
         uint256 minReturnAmount;
     }
 
-    uint256 public constant VARIABLE_DEBT = 2;
+    /*//////////////////////////////////////////////////////////////
+                                Aave
+    //////////////////////////////////////////////////////////////*/
 
+    uint256 public constant VARIABLE_DEBT = 2;
     IPool public aavePool;
     IProtocolDataProvider public aaveDataProvider;
-    IUniswapV3SwapRouter public uniswapRouter;
-
     uint256 public flashLoanFeeBps;
+
+    /*//////////////////////////////////////////////////////////////
+                                Uniswap
+    //////////////////////////////////////////////////////////////*/
+    IUniswapV3SwapRouter public uniswapRouter;
 
     uint256[50] private __gap;
 
@@ -83,20 +89,41 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
     }
 
     /**
+     * @notice Calculates the flash loan, borrow, and fee amounts for a given leverage and collateral.
+     * @dev Use the returned borrowAmount to determine the optimal Uniswap swap path off-chain
+     *      (e.g. via the Uniswap routing API) before calling createLeveragedPosition.
+     * @param desiredLeverage Desired leverage with 4 decimals (e.g. 25000 = 2.5x)
+     * @param collateralAmount Amount of collateral the user will provide (0 to use only existing position collateral)
+     * @return flashLoanAmount Amount to be flash loaned from Aave (collateral token units)
+     * @return borrowAmount Amount to be borrowed from Aave and swapped via Uniswap (borrow token units)
+     * @return strataxFee Protocol fee deducted from the flash loan amount (collateral token units)
+     */
+    function calculateOpenParams(uint256 desiredLeverage, uint256 collateralAmount)
+        external
+        view
+        returns (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFee)
+    {
+        return _computeOpenParams(desiredLeverage, collateralAmount);
+    }
+
+    /**
      * @notice Creates/increases a leveraged position using desired leverage directly.
      * @dev No external calculateOpenParams call is required.
      */
     function createLeveragedPosition(
         uint256 desiredLeverage,
         uint256 collateralAmount,
-        uint24 poolFee,
+        address[] calldata swapPath,
+        uint24[] calldata swapFees,
         uint256 minReturnAmount
     ) public onlyOwner {
+        StrataxUniswapLib.validateSwapPath(swapPath, swapFees, collateralToken, borrowToken);
+
         StrataxAaveUniswapCombinedLib.CreateLeveragedPositionParams memory params =
             StrataxAaveUniswapCombinedLib.CreateLeveragedPositionParams({
                 desiredLeverage: desiredLeverage,
                 collateralAmount: collateralAmount,
-                poolFee: poolFee,
+                swapPath: StrataxUniswapLib.encodeSwapPath(swapPath, swapFees),
                 minReturnAmount: minReturnAmount
             });
 
@@ -129,7 +156,7 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
             borrowToken: borrowToken,
             borrowAmount: borrowAmount,
             strataxFeeAmount: strataxFeeAmount,
-            poolFee: createParams.poolFee,
+            swapPath: createParams.swapPath,
             minReturnAmount: createParams.minReturnAmount
         });
 
@@ -137,18 +164,21 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         aavePool.flashLoanSimple(address(this), collateralToken, flashLoanAmount, encodedParams, 0);
     }
 
-    function adjustPositionLeverage(uint256 desiredLeverage, uint24 poolFee, uint256 minReturnAmount)
-        external
-        onlyOwner
-    {
+    function adjustPositionLeverage(
+        uint256 desiredLeverage,
+        address[] calldata swapPath,
+        uint24[] calldata swapFees,
+        uint256 minReturnAmount
+    ) external onlyOwner {
         require(!isBurned, "Position is burned, only unwinding allowed");
         require(desiredLeverage >= StrataxCalculations.LEVERAGE_PRECISION, "Leverage must be >= 1x");
+        StrataxUniswapLib.validateSwapPath(swapPath, swapFees, collateralToken, borrowToken);
 
         uint256 currentLeverage = getCurrentLeverage();
         require(currentLeverage != desiredLeverage, "Already at target leverage");
 
         if (currentLeverage < desiredLeverage) {
-            createLeveragedPosition(desiredLeverage, 0, poolFee, minReturnAmount);
+            createLeveragedPosition(desiredLeverage, 0, swapPath, swapFees, minReturnAmount);
             return;
         }
 
@@ -182,7 +212,7 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         require(debtToRepay > 0, "Debt repay too small");
 
         (uint256 collateralToWithdraw, uint256 debtAmount,) = calculateUnwindParams(debtToRepay);
-        unwindPosition(collateralToWithdraw, debtAmount, poolFee, minReturnAmount);
+        unwindPosition(collateralToWithdraw, debtAmount, swapPath, swapFees, minReturnAmount);
     }
 
     function calculateUnwindParams(uint256 debtToRepay)
@@ -220,16 +250,21 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         return (collateralToWithdraw, debtToRepay, strataxFee);
     }
 
-    function unwindPosition(uint256 collateralToWithdraw, uint256 debtAmount, uint24 poolFee, uint256 minReturnAmount)
-        public
-        onlyOwner
-    {
+    function unwindPosition(
+        uint256 collateralToWithdraw,
+        uint256 debtAmount,
+        address[] calldata swapPath,
+        uint24[] calldata swapFees,
+        uint256 minReturnAmount
+    ) public onlyOwner {
+        StrataxUniswapLib.validateSwapPath(swapPath, swapFees, collateralToken, borrowToken);
+
         UnwindParams memory params = UnwindParams({
             collateralToken: collateralToken,
             collateralToWithdraw: collateralToWithdraw,
             debtToken: borrowToken,
             debtAmount: debtAmount,
-            poolFee: poolFee,
+            swapPath: StrataxUniswapLib.encodeSwapPath(swapPath, swapFees),
             minReturnAmount: minReturnAmount
         });
 
@@ -275,12 +310,8 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         aavePool.borrow(openParams.borrowToken, openParams.borrowAmount, VARIABLE_DEBT, 0, address(this));
 
         IERC20(openParams.borrowToken).forceApprove(address(uniswapRouter), openParams.borrowAmount);
-        uint256 returnAmount = _swapExactInputSingle(
-            openParams.borrowToken,
-            openParams.collateralToken,
-            openParams.poolFee,
-            openParams.borrowAmount,
-            openParams.minReturnAmount
+        uint256 returnAmount = StrataxUniswapLib.swapExactInput(
+            uniswapRouter, openParams.swapPath, openParams.borrowAmount, openParams.minReturnAmount
         );
 
         uint256 totalDebt = amount + premium;
@@ -319,12 +350,8 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
             aavePool.withdraw(unwindParams.collateralToken, unwindParams.collateralToWithdraw, address(this));
 
         IERC20(unwindParams.collateralToken).forceApprove(address(uniswapRouter), withdrawnAmount);
-        uint256 returnAmount = _swapExactInputSingle(
-            unwindParams.collateralToken,
-            borrowToken,
-            unwindParams.poolFee,
-            withdrawnAmount,
-            unwindParams.minReturnAmount
+        uint256 returnAmount = StrataxUniswapLib.swapExactInput(
+            uniswapRouter, unwindParams.swapPath, withdrawnAmount, unwindParams.minReturnAmount
         );
 
         uint256 totalDebt = amount + premium;
@@ -351,36 +378,6 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
 
         emit PositionUnwound(user, unwindParams.collateralToken, asset, amount, withdrawnAmount);
         return true;
-    }
-
-    function _swapExactInputSingle(
-        address tokenIn,
-        address tokenOut,
-        uint24 poolFee,
-        uint256 amountIn,
-        uint256 minAmountOut
-    ) internal returns (uint256 amountOut) {
-        require(amountIn > 0, "Invalid amount in");
-        require(tokenIn != address(0) && tokenOut != address(0), "Invalid token");
-
-        uint256 balanceBefore = IERC20(tokenOut).balanceOf(address(this));
-
-        IUniswapV3SwapRouter.ExactInputSingleParams memory swapParams = IUniswapV3SwapRouter.ExactInputSingleParams({
-            tokenIn: tokenIn,
-            tokenOut: tokenOut,
-            fee: poolFee,
-            recipient: address(this),
-            deadline: block.timestamp,
-            amountIn: amountIn,
-            amountOutMinimum: minAmountOut,
-            sqrtPriceLimitX96: 0
-        });
-
-        amountOut = uniswapRouter.exactInputSingle(swapParams);
-        require(amountOut >= minAmountOut, "Insufficient return amount from swap");
-
-        uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
-        require(balanceAfter > balanceBefore, "Destination token not received");
     }
 
     function _computeOpenParams(uint256 desiredLeverage, uint256 collateralAmount)
@@ -441,12 +438,7 @@ contract Stratax_Aave_Uniswap is BaseStrataxPosition {
         }
     }
 
-    function _getTotalCollateralAndDebt()
-        internal
-        view
-        override
-        returns (uint256 totalCollateral, uint256 totalDebt)
-    {
+    function _getTotalCollateralAndDebt() internal view override returns (uint256 totalCollateral, uint256 totalDebt) {
         (address aTokenCollateral,,) = aaveDataProvider.getReserveTokensAddresses(collateralToken);
         (,, address variableDebtToken) = aaveDataProvider.getReserveTokensAddresses(borrowToken);
         totalCollateral = IERC20(aTokenCollateral).balanceOf(address(this));

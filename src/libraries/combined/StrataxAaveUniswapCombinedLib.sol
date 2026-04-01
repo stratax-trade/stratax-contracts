@@ -22,14 +22,15 @@ library StrataxAaveUniswapCombinedLib {
     struct OpenPositionParams {
         uint256 collateralAmount;
         uint256 leverage;
-        uint24 poolFee;
+        address[] swapPath;
+        uint24[] swapFees;
         uint256 minReturnAmount;
     }
 
     struct CreateLeveragedPositionParams {
         uint256 desiredLeverage;
         uint256 collateralAmount;
-        uint24 poolFee;
+        bytes swapPath;
         uint256 minReturnAmount;
     }
 
@@ -172,15 +173,23 @@ library StrataxAaveUniswapCombinedLib {
         address strataxProxy,
         uint256 collateralAmount,
         uint256 leverage,
-        uint24 poolFee,
+        address[] memory swapPath,
+        uint24[] memory swapFees,
         uint256 minReturnAmount
     ) internal {
-        Stratax(strataxProxy).createLeveragedPosition(leverage, collateralAmount, poolFee, minReturnAmount);
+        Stratax(strataxProxy).createLeveragedPosition(leverage, collateralAmount, swapPath, swapFees, minReturnAmount);
     }
 
     function openPositionFromEncoded(address strataxProxy, bytes memory openPositionData) internal {
         OpenPositionParams memory params = decodeOpenPositionParams(openPositionData);
-        openPosition(strataxProxy, params.collateralAmount, params.leverage, params.poolFee, params.minReturnAmount);
+        openPosition(
+            strataxProxy,
+            params.collateralAmount,
+            params.leverage,
+            params.swapPath,
+            params.swapFees,
+            params.minReturnAmount
+        );
     }
 
     function validateTokens(address collateralToken, address borrowToken, address dataProvider) internal view {

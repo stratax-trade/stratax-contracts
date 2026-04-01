@@ -99,7 +99,7 @@ contract StrataxTokenSaleForkTest is Test, ConstantsEtMainnet {
             uint256 treasuryWethBefore = IERC20(WETH).balanceOf(treasury);
 
             vm.prank(buyer);
-            uint256 out = sale.buy(WETH, paymentAmount, minOut, new bytes[](0));
+            uint256 out = sale.buy(WETH, paymentAmount, minOut, new bytes[](0), address(0));
             uint256 immediateUnlock = (out * sale.PUBLIC_SALE_TGE_BPS()) / sale.BPS();
 
             assertTrue(out >= minOut, "out should satisfy minOut");

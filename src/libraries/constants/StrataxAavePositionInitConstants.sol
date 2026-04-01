@@ -8,6 +8,10 @@ library StrataxAavePositionInitConstants {
     address internal constant ETHEREUM_AAVE_POOL = 0x87870Bca3F3fD6335C3F4ce8392D69350B4fA4E2;
     address internal constant ETHEREUM_AAVE_DATA_PROVIDER = 0x0a16f2FCC0D44FaE41cc54e079281D84A363bECD;
 
+    // Sepolia testnet Aave V3 contracts
+    address internal constant SEPOLIA_AAVE_POOL = 0x6Ae43d3271ff6888e7Fc43Fd7321a503ff738951;
+    address internal constant SEPOLIA_AAVE_DATA_PROVIDER = 0x3e9708d80f7B3e43118013075F7e95CE3AB31F31;
+
     // Strategy defaults (4-decimal precision)
     uint256 internal constant ETHEREUM_DEFAULT_BORROW_SAFETY_MARGIN = 9950;
     uint256 internal constant ETHEREUM_DEFAULT_MAX_LEVERAGE_OFFSET = 75;
@@ -29,6 +33,29 @@ library StrataxAavePositionInitConstants {
         params = StrataxAaveLib.InitParams({
             pool: ETHEREUM_AAVE_POOL,
             dataProvider: ETHEREUM_AAVE_DATA_PROVIDER,
+            flashLoanFeeBps: flashLoanFeeBps,
+            defaultBorrowSafetyMargin: ETHEREUM_DEFAULT_BORROW_SAFETY_MARGIN,
+            defaultMaxLeverageOffset: ETHEREUM_DEFAULT_MAX_LEVERAGE_OFFSET
+        });
+    }
+
+    function sepoliaPositionInitParams() internal pure returns (StrataxAaveLib.PositionInitParams memory params) {
+        params = StrataxAaveLib.PositionInitParams({
+            aavePool: SEPOLIA_AAVE_POOL,
+            aaveDataProvider: SEPOLIA_AAVE_DATA_PROVIDER,
+            borrowSafetyMargin: ETHEREUM_DEFAULT_BORROW_SAFETY_MARGIN,
+            maxLeverageOffset: ETHEREUM_DEFAULT_MAX_LEVERAGE_OFFSET
+        });
+    }
+
+    function sepoliaConfigParams(uint256 flashLoanFeeBps)
+        internal
+        pure
+        returns (StrataxAaveLib.InitParams memory params)
+    {
+        params = StrataxAaveLib.InitParams({
+            pool: SEPOLIA_AAVE_POOL,
+            dataProvider: SEPOLIA_AAVE_DATA_PROVIDER,
             flashLoanFeeBps: flashLoanFeeBps,
             defaultBorrowSafetyMargin: ETHEREUM_DEFAULT_BORROW_SAFETY_MARGIN,
             defaultMaxLeverageOffset: ETHEREUM_DEFAULT_MAX_LEVERAGE_OFFSET

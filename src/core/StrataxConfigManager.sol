@@ -17,6 +17,8 @@ import {IStrataxProtocolBeacon} from "../interfaces/internal/IStrataxProtocolBea
 contract StrataxConfigManager is Initializable, OwnableUpgradeable, UUPSUpgradeable {
     StrataxPositionNft public positionNft;
 
+    uint256[50] private __gap;
+
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
         _disableInitializers();

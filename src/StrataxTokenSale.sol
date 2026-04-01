@@ -27,6 +27,7 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     uint256 public constant BPS = 10_000;
     uint256 public constant PUBLIC_SALE_TGE_BPS = 2_500; // 25% immediate unlock
     uint256 public constant PUBLIC_SALE_VESTING_DURATION = 270 days; // 9 months linear vesting
+    uint256 public constant MAX_REFERRAL_FEE_BPS = 2_000; // 20% hard cap on referral rewards
 
     struct PaymentTokenConfig {
         bool isWhitelisted;
@@ -58,9 +59,15 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     mapping(address => uint256) public vestedClaimed;
     mapping(address => ManualVestingSchedule[]) private manualVestings;
 
-    /// @notice Storage gap for future upgrades (reserve space for 50 new state variables)
+    /// @notice Referral reward in basis points of the buyer's strataxOut (e.g. 500 = 5%).
+    uint256 public referralFeeBps;
+
+    /// @notice Cumulative STRATAX earned by each referrer.
+    mapping(address => uint256) public referralEarnings;
+
+    /// @notice Storage gap for future upgrades (reserve space for 48 new state variables)
     /// @dev This prevents storage collisions when adding new state variables in upgrades
-    uint256[50] private __gap;
+    uint256[48] private __gap;
 
     event StrataxPriceUpdated(uint256 oldPriceUsd, uint256 newPriceUsd);
     event PaymentRecipientUpdated(address indexed oldRecipient, address indexed newRecipient);
@@ -87,6 +94,9 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     );
     event ManualVestingTokensClaimed(address indexed beneficiary, uint256 amount);
     event ProceedsWithdrawn(address indexed token, address indexed to, uint256 amount);
+    event ReferralFeeUpdated(uint256 oldBps, uint256 newBps);
+    event ReferralRewarded(address indexed referrer, address indexed buyer, uint256 amount);
+    event ReferralRewardsClaimed(address indexed referrer, uint256 amount);
 
     /// @custom:oz-upgrades-unsafe-allow constructor
     constructor() {
@@ -197,6 +207,17 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
     }
 
     /**
+     * @notice Owner sets the referral reward rate.
+     * @param newBps Reward in basis points of the buyer's strataxOut (e.g. 500 = 5%). Set to 0 to disable.
+     */
+    function setReferralFeeBps(uint256 newBps) external onlyOwner {
+        require(newBps <= MAX_REFERRAL_FEE_BPS, "Referral fee exceeds max");
+        uint256 oldBps = referralFeeBps;
+        referralFeeBps = newBps;
+        emit ReferralFeeUpdated(oldBps, newBps);
+    }
+
+    /**
      * @notice Owner whitelists or updates a payment token config.
      */
     function whitelistPaymentToken(address token, bytes32 priceId, uint256 maxPriceAge) external onlyOwner {
@@ -255,13 +276,15 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
      * @param paymentAmount Amount of payment token sent from buyer.
      * @param minStrataxOut Minimum STRATAX output for slippage protection.
      * @param pythUpdateData Optional update data for Pyth; pass empty if prices are already fresh.
+     * @param referrer Address of the referrer. Pass address(0) for no referral.
      */
-    function buy(address paymentToken, uint256 paymentAmount, uint256 minStrataxOut, bytes[] calldata pythUpdateData)
-        external
-        payable
-        nonReentrant
-        returns (uint256 strataxOut)
-    {
+    function buy(
+        address paymentToken,
+        uint256 paymentAmount,
+        uint256 minStrataxOut,
+        bytes[] calldata pythUpdateData,
+        address referrer
+    ) external payable nonReentrant returns (uint256 strataxOut) {
         require(!saleClosed, "Sale is closed");
         require(!salePaused, "Sale is paused");
         require(paymentAmount > 0, "Invalid payment amount");
@@ -281,7 +304,17 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
 
         strataxOut = _calculateStrataxOut(paymentToken, paymentAmount, paymentTokenPriceUsd);
         require(strataxOut >= minStrataxOut, "Slippage: insufficient STRATAX out");
-        require(totalPublicSaleSold + strataxOut <= getPublicSaleSupplyCap(), "Public sale allocation exceeded");
+
+        // Compute referral reward — referrer must be non-zero and not the buyer.
+        uint256 referralAmount = 0;
+        if (referrer != address(0) && referrer != msg.sender && referralFeeBps > 0) {
+            referralAmount = (strataxOut * referralFeeBps) / BPS;
+        }
+
+        require(
+            totalPublicSaleSold + strataxOut + referralAmount <= getPublicSaleSupplyCap(),
+            "Public sale allocation exceeded"
+        );
 
         uint256 immediateUnlock = (strataxOut * PUBLIC_SALE_TGE_BPS) / BPS;
         uint256 vestedPortion = strataxOut - immediateUnlock;
@@ -292,7 +325,12 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
             IERC20(strataxToken).safeTransfer(msg.sender, immediateUnlock);
         }
 
-        totalPublicSaleSold += strataxOut;
+        if (referralAmount > 0) {
+            referralEarnings[referrer] += referralAmount;
+            emit ReferralRewarded(referrer, msg.sender, referralAmount);
+        }
+
+        totalPublicSaleSold += strataxOut + referralAmount;
         totalPurchased[msg.sender] += strataxOut;
         totalVestedAllocation[msg.sender] += vestedPortion;
 
@@ -302,6 +340,20 @@ contract StrataxTokenSale is Initializable, OwnableUpgradeable, UUPSUpgradeable,
         }
 
         emit TokensPurchased(msg.sender, paymentToken, paymentAmount, paymentTokenPriceUsd, strataxOut);
+    }
+
+    /**
+     * @notice Claims all accumulated referral rewards for the caller.
+     */
+    function claimReferralRewards() external nonReentrant returns (uint256 claimedAmount) {
+        claimedAmount = referralEarnings[msg.sender];
+        require(claimedAmount > 0, "No referral rewards to claim");
+        require(IERC20(strataxToken).balanceOf(address(this)) >= claimedAmount, "Insufficient sale inventory");
+
+        referralEarnings[msg.sender] = 0;
+        IERC20(strataxToken).safeTransfer(msg.sender, claimedAmount);
+
+        emit ReferralRewardsClaimed(msg.sender, claimedAmount);
     }
 
     /**

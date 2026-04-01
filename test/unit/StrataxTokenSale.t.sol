@@ -110,7 +110,7 @@ contract StrataxTokenSaleUnitTest is Test {
         uint256 recipientUsdcBefore = usdc.balanceOf(paymentRecipient);
 
         vm.prank(buyer);
-        uint256 out = sale.buy(address(usdc), paymentAmount, minOut, new bytes[](0));
+        uint256 out = sale.buy(address(usdc), paymentAmount, minOut, new bytes[](0), address(0));
 
         uint256 immediateUnlock = (out * sale.PUBLIC_SALE_TGE_BPS()) / sale.BPS();
 
@@ -123,7 +123,7 @@ contract StrataxTokenSaleUnitTest is Test {
         uint256 paymentAmount = 100e6;
 
         vm.prank(buyer);
-        uint256 out = sale.buy(address(usdc), paymentAmount, 499e18, new bytes[](0));
+        uint256 out = sale.buy(address(usdc), paymentAmount, 499e18, new bytes[](0), address(0));
 
         uint256 immediateUnlock = (out * sale.PUBLIC_SALE_TGE_BPS()) / sale.BPS();
         uint256 vested = out - immediateUnlock;
@@ -150,7 +150,7 @@ contract StrataxTokenSaleUnitTest is Test {
 
         vm.prank(buyer);
         vm.expectRevert("Payment token not whitelisted");
-        sale.buy(address(dai), 100e18, 0, new bytes[](0));
+        sale.buy(address(dai), 100e18, 0, new bytes[](0), address(0));
     }
 
     function test_BuyRevertsWhenPriceIsStale() public {
@@ -158,7 +158,7 @@ contract StrataxTokenSaleUnitTest is Test {
 
         vm.prank(buyer);
         vm.expectRevert("stale price");
-        sale.buy(address(usdc), 100e6, 0, new bytes[](0));
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), address(0));
     }
 
     function test_BuyWithPythUpdateDataRequiresFee() public {
@@ -169,7 +169,7 @@ contract StrataxTokenSaleUnitTest is Test {
 
         vm.prank(buyer);
         vm.expectRevert("Insufficient update fee");
-        sale.buy{value: 0.005 ether}(address(usdc), 100e6, 0, updateData);
+        sale.buy{value: 0.005 ether}(address(usdc), 100e6, 0, updateData, address(0));
     }
 
     function test_BuyWithPythUpdateDataSucceeds() public {
@@ -182,7 +182,7 @@ contract StrataxTokenSaleUnitTest is Test {
         uint256 pythBalanceBefore = address(pyth).balance;
 
         vm.prank(buyer);
-        uint256 out = sale.buy{value: 0.02 ether}(address(usdc), 100e6, 499e18, updateData);
+        uint256 out = sale.buy{value: 0.02 ether}(address(usdc), 100e6, 499e18, updateData, address(0));
 
         assertEq(out, 500e18);
         assertEq(address(pyth).balance, pythBalanceBefore + 0.01 ether);
@@ -194,7 +194,7 @@ contract StrataxTokenSaleUnitTest is Test {
 
         vm.prank(buyer);
         vm.expectRevert("Sale is paused");
-        sale.buy(address(usdc), 100e6, 0, new bytes[](0));
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), address(0));
     }
 
     function test_BuyRevertsWhenSaleClosed() public {
@@ -203,12 +203,12 @@ contract StrataxTokenSaleUnitTest is Test {
 
         vm.prank(buyer);
         vm.expectRevert("Sale is closed");
-        sale.buy(address(usdc), 100e6, 0, new bytes[](0));
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), address(0));
     }
 
     function test_ClaimStillWorksAfterSaleClosed() public {
         vm.prank(buyer);
-        sale.buy(address(usdc), 100e6, 499e18, new bytes[](0));
+        sale.buy(address(usdc), 100e6, 499e18, new bytes[](0), address(0));
 
         vm.prank(owner);
         sale.closeSale();
@@ -242,5 +242,295 @@ contract StrataxTokenSaleUnitTest is Test {
         vm.prank(owner);
         vm.expectRevert("Cannot withdraw STRATAX");
         sale.withdrawProceeds(address(stratax), owner, 1e18);
+    }
+
+    /*//////////////////////////////////////////////////////////////
+                         REFERRAL SYSTEM
+    //////////////////////////////////////////////////////////////*/
+
+    // ── setReferralFeeBps ────────────────────────────────────────
+
+    function test_SetReferralFeeBps_OwnerCanSet() public {
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+        assertEq(sale.referralFeeBps(), 500);
+    }
+
+    function test_SetReferralFeeBps_EmitsEvent() public {
+        vm.prank(owner);
+        vm.expectEmit(false, false, false, true);
+        emit StrataxTokenSale.ReferralFeeUpdated(0, 500);
+        sale.setReferralFeeBps(500);
+    }
+
+    function test_SetReferralFeeBps_RevertsAboveMax() public {
+        uint256 tooHigh = sale.MAX_REFERRAL_FEE_BPS() + 1;
+        vm.prank(owner);
+        vm.expectRevert("Referral fee exceeds max");
+        sale.setReferralFeeBps(tooHigh);
+    }
+
+    function test_SetReferralFeeBps_AtMaxSucceeds() public {
+        uint256 maxBps = sale.MAX_REFERRAL_FEE_BPS();
+        vm.prank(owner);
+        sale.setReferralFeeBps(maxBps);
+        assertEq(sale.referralFeeBps(), maxBps);
+    }
+
+    function test_SetReferralFeeBps_CanBeSetToZero() public {
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(0);
+        assertEq(sale.referralFeeBps(), 0);
+    }
+
+    function test_SetReferralFeeBps_RevertsForNonOwner() public {
+        vm.prank(buyer);
+        vm.expectRevert();
+        sale.setReferralFeeBps(500);
+    }
+
+    // ── buy() referral accounting ────────────────────────────────
+
+    function test_Buy_WithReferrer_AccumulatesEarnings() public {
+        address referrer = makeAddr("referrer");
+        uint256 feeBps = 500; // 5%
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(feeBps);
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        // 100 USDC / $0.20 = 500 STRATAX; 5% = 25 STRATAX referral
+        uint256 expectedReferral = (out * feeBps) / sale.BPS();
+        assertEq(sale.referralEarnings(referrer), expectedReferral);
+    }
+
+    function test_Buy_WithReferrer_ReferralNotTransferredImmediately() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        uint256 referrerBalanceBefore = stratax.balanceOf(referrer);
+
+        vm.prank(buyer);
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        // Referral tokens should NOT be transferred yet
+        assertEq(stratax.balanceOf(referrer), referrerBalanceBefore);
+    }
+
+    function test_Buy_WithReferrer_EmitsReferralRewardedEvent() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        vm.expectEmit(true, true, false, false);
+        emit StrataxTokenSale.ReferralRewarded(
+            referrer,
+            buyer,
+            0 /* any amount */
+        );
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+    }
+
+    function test_Buy_WithReferrer_CountedInTotalPublicSaleSold() public {
+        address referrer = makeAddr("referrer");
+        uint256 feeBps = 500;
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(feeBps);
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        uint256 referralAmount = (out * feeBps) / sale.BPS();
+        assertEq(sale.totalPublicSaleSold(), out + referralAmount);
+    }
+
+    function test_Buy_ReferrerEqualsZeroAddress_NoReferral() public {
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), address(0));
+
+        assertEq(sale.totalPublicSaleSold(), out, "no referral should be counted");
+    }
+
+    function test_Buy_ReferrerEqualsBuyer_NoReferral() public {
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), buyer);
+
+        assertEq(sale.referralEarnings(buyer), 0, "self-referral must not earn rewards");
+        assertEq(sale.totalPublicSaleSold(), out, "only buyer amount counted");
+    }
+
+    function test_Buy_ReferralFeeBpsZero_NoReferral() public {
+        // referralFeeBps starts at 0
+        address referrer = makeAddr("referrer");
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        assertEq(sale.referralEarnings(referrer), 0);
+        assertEq(sale.totalPublicSaleSold(), out);
+    }
+
+    function test_Buy_MultipleReferralPurchases_EarningsAccumulate() public {
+        address referrer = makeAddr("referrer");
+        uint256 feeBps = 1_000; // 10%
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(feeBps);
+
+        address buyer2 = makeAddr("buyer2");
+        usdc.mint(buyer2, 10_000e6);
+        vm.prank(buyer2);
+        usdc.approve(address(sale), type(uint256).max);
+
+        vm.prank(buyer);
+        uint256 out1 = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        vm.prank(buyer2);
+        uint256 out2 = sale.buy(address(usdc), 200e6, 0, new bytes[](0), referrer);
+
+        uint256 expected = (out1 * feeBps) / sale.BPS() + (out2 * feeBps) / sale.BPS();
+        assertEq(sale.referralEarnings(referrer), expected);
+    }
+
+    // ── claimReferralRewards ─────────────────────────────────────
+
+    function test_ClaimReferralRewards_TransfersTokensToReferrer() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        uint256 expectedReferral = (out * 500) / sale.BPS();
+        uint256 referrerBefore = stratax.balanceOf(referrer);
+
+        vm.prank(referrer);
+        uint256 claimed = sale.claimReferralRewards();
+
+        assertEq(claimed, expectedReferral);
+        assertEq(stratax.balanceOf(referrer), referrerBefore + expectedReferral);
+    }
+
+    function test_ClaimReferralRewards_ZerosOutEarnings() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        vm.prank(referrer);
+        sale.claimReferralRewards();
+
+        assertEq(sale.referralEarnings(referrer), 0);
+    }
+
+    function test_ClaimReferralRewards_EmitsEvent() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        uint256 out = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        uint256 expectedReferral = (out * 500) / sale.BPS();
+
+        vm.prank(referrer);
+        vm.expectEmit(true, false, false, true);
+        emit StrataxTokenSale.ReferralRewardsClaimed(referrer, expectedReferral);
+        sale.claimReferralRewards();
+    }
+
+    function test_ClaimReferralRewards_RevertsWithNoEarnings() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(referrer);
+        vm.expectRevert("No referral rewards to claim");
+        sale.claimReferralRewards();
+    }
+
+    function test_ClaimReferralRewards_CanClaimAfterSaleClosed() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        vm.prank(owner);
+        sale.closeSale();
+
+        // Claim should still work after sale closes
+        vm.prank(referrer);
+        uint256 claimed = sale.claimReferralRewards();
+        assertTrue(claimed > 0);
+    }
+
+    function test_ClaimReferralRewards_CannotDoubleClaimInSameBlock() public {
+        address referrer = makeAddr("referrer");
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(500);
+
+        vm.prank(buyer);
+        sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        vm.prank(referrer);
+        sale.claimReferralRewards();
+
+        vm.prank(referrer);
+        vm.expectRevert("No referral rewards to claim");
+        sale.claimReferralRewards();
+    }
+
+    function test_ClaimReferralRewards_AccumulateAcrossPurchasesThenClaim() public {
+        address referrer = makeAddr("referrer");
+        uint256 feeBps = 1_000; // 10%
+
+        vm.prank(owner);
+        sale.setReferralFeeBps(feeBps);
+
+        address buyer2 = makeAddr("buyer2");
+        usdc.mint(buyer2, 10_000e6);
+        vm.prank(buyer2);
+        usdc.approve(address(sale), type(uint256).max);
+
+        vm.prank(buyer);
+        uint256 out1 = sale.buy(address(usdc), 100e6, 0, new bytes[](0), referrer);
+
+        vm.prank(buyer2);
+        uint256 out2 = sale.buy(address(usdc), 200e6, 0, new bytes[](0), referrer);
+
+        uint256 totalExpected = (out1 * feeBps) / sale.BPS() + (out2 * feeBps) / sale.BPS();
+
+        uint256 referrerBefore = stratax.balanceOf(referrer);
+
+        vm.prank(referrer);
+        uint256 claimed = sale.claimReferralRewards();
+
+        assertEq(claimed, totalExpected);
+        assertEq(stratax.balanceOf(referrer), referrerBefore + totalExpected);
+        assertEq(sale.referralEarnings(referrer), 0);
     }
 }

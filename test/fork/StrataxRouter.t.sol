@@ -59,8 +59,14 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
         vm.startPrank(user);
         IERC20(USDC).approve(address(router), collateralAmount);
 
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory openFees = new uint24[](1);
+        openFees[0] = poolFee;
+
         (uint256 tokenId, address strataxProxy) =
-            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, poolFee, 0);
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, openPath, openFees, 0);
         vm.stopPrank();
 
         // Verify NFT ownership
@@ -90,7 +96,13 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         vm.startPrank(user);
         IERC20(USDC).approve(address(router), collateralAmount);
-        (uint256 tokenId,) = router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, poolFee, 0);
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = poolFee;
+        (uint256 tokenId,) =
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, openPath, fees, 0);
 
         address strataxProxy = strataxPositionNft.getStrataxProxy(tokenId);
         (, uint256 totalDebtBefore,,,,) = IPool(AAVE_POOL).getUserAccountData(strataxProxy);
@@ -103,7 +115,10 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         // Partial unwind — repay half the debt (in borrow token units)
         uint256 partialDebt = totalDebtInWeth / 2;
-        router.unwindAaveUniswapPosition(tokenId, partialDebt, poolFee, 0);
+        address[] memory unwindPath = new address[](2);
+        unwindPath[0] = USDC;
+        unwindPath[1] = WETH;
+        router.unwindAaveUniswapPosition(tokenId, partialDebt, unwindPath, fees, 0);
         vm.stopPrank();
 
         // Verify debt was reduced
@@ -125,13 +140,22 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         vm.startPrank(user);
         IERC20(USDC).approve(address(router), collateralAmount);
-        (uint256 tokenId,) = router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, poolFee, 0);
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = poolFee;
+        (uint256 tokenId,) =
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, openPath, fees, 0);
 
         // Approve router for NFT
         strataxPositionNft.approve(address(router), tokenId);
 
         // Full unwind
-        router.unwindAaveUniswapPosition(tokenId, type(uint256).max, poolFee, 0);
+        address[] memory unwindPath = new address[](2);
+        unwindPath[0] = USDC;
+        unwindPath[1] = WETH;
+        router.unwindAaveUniswapPosition(tokenId, type(uint256).max, unwindPath, fees, 0);
         vm.stopPrank();
 
         // Verify position fully unwound
@@ -183,8 +207,13 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         vm.startPrank(user);
         IERC20(USDC).approve(address(router), collateralAmount);
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = poolFee;
         (uint256 tokenId, address strataxProxy) =
-            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, 15_000, poolFee, 0);
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, 15_000, openPath, fees, 0);
 
         // Borrow more via router
         uint256 borrowAmount = 0.1 ether;
@@ -208,8 +237,13 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         vm.startPrank(user);
         IERC20(USDC).approve(address(router), collateralAmount);
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = poolFee;
         (uint256 tokenId, address strataxProxy) =
-            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, 20_000, poolFee, 0);
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, 20_000, openPath, fees, 0);
 
         (, uint256 debtBefore,,,,) = IPool(AAVE_POOL).getUserAccountData(strataxProxy);
 
@@ -373,14 +407,22 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         vm.startPrank(user);
         IERC20(USDC).approve(address(router), collateralAmount);
-        (uint256 tokenId,) = router.createAaveUniswapPosition(USDC, WETH, collateralAmount, 20_000, poolFee, 0);
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory fees = new uint24[](1);
+        fees[0] = poolFee;
+        (uint256 tokenId,) = router.createAaveUniswapPosition(USDC, WETH, collateralAmount, 20_000, openPath, fees, 0);
         vm.stopPrank();
 
         // Different user tries to unwind
         address attacker = address(0xDEAD);
         vm.prank(attacker);
         vm.expectRevert(StrataxRouter.NotPositionOwner.selector);
-        router.unwindAaveUniswapPosition(tokenId, type(uint256).max, poolFee, 0);
+        address[] memory unwindPath = new address[](2);
+        unwindPath[0] = USDC;
+        unwindPath[1] = WETH;
+        router.unwindAaveUniswapPosition(tokenId, type(uint256).max, unwindPath, fees, 0);
     }
 
     function test_Router_RevertIfWrongSwapProtocol() public {
@@ -390,9 +432,12 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
         strataxPositionNft.approve(address(router), tokenId);
 
         vm.expectRevert(StrataxRouter.InvalidSwapProtocol.selector);
-        router.unwindAaveUniswapPosition(
-            tokenId, type(uint256).max, StrataxUniswapConstants.ETHEREUM_DEFAULT_UNISWAP_POOL_FEE, 0
-        );
+        address[] memory dummyPath = new address[](2);
+        dummyPath[0] = USDC;
+        dummyPath[1] = WETH;
+        uint24[] memory dummyFees = new uint24[](1);
+        dummyFees[0] = StrataxUniswapConstants.ETHEREUM_DEFAULT_UNISWAP_POOL_FEE;
+        router.unwindAaveUniswapPosition(tokenId, type(uint256).max, dummyPath, dummyFees, 0);
         vm.stopPrank();
     }
 

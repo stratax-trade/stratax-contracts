@@ -42,8 +42,14 @@ contract StrataxUniswapForkTest is StrataxForkTestBase {
         vm.startPrank(positionOwner);
         IERC20(USDC).approve(address(router), collateralAmount);
 
+        address[] memory openPath = new address[](2);
+        openPath[0] = WETH;
+        openPath[1] = USDC;
+        uint24[] memory openFees = new uint24[](1);
+        openFees[0] = poolFee;
+
         (uint256 mintedTokenId, address strataxProxy) =
-            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, poolFee, 0);
+            router.createAaveUniswapPosition(USDC, WETH, collateralAmount, desiredLeverage, openPath, openFees, 0);
         vm.stopPrank();
 
         assertEq(strataxPositionNft.ownerOf(mintedTokenId), positionOwner, "NFT owner should match mint recipient");
