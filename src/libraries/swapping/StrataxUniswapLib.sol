@@ -113,4 +113,10 @@ library StrataxUniswapLib {
         uint256 balanceAfter = IERC20(tokenOut).balanceOf(address(this));
         require(balanceAfter > balanceBefore, "Destination token not received");
     }
+
+    /// @notice Decodes encoded swap config and builds InitParams for position contract initialization.
+    function buildSwapInitParams(bytes memory configData) internal pure returns (InitParams memory params) {
+        Config memory config = decodeConfig(configData);
+        params = InitParams({uniswapRouter: config.router});
+    }
 }

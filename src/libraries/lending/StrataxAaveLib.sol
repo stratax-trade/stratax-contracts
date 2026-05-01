@@ -71,4 +71,15 @@ library StrataxAaveLib {
 
         return isActive && !isFrozen && borrowingEnabled;
     }
+
+    /// @notice Decodes encoded lending config and builds PositionInitParams for position contract initialization.
+    function buildPositionInitParams(bytes memory configData) internal pure returns (PositionInitParams memory params) {
+        InitParams memory config = decodeConfig(configData);
+        params = PositionInitParams({
+            aavePool: config.pool,
+            aaveDataProvider: config.dataProvider,
+            borrowSafetyMargin: config.defaultBorrowSafetyMargin,
+            maxLeverageOffset: config.defaultMaxLeverageOffset
+        });
+    }
 }

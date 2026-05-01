@@ -8,6 +8,7 @@ import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
 import {StrataxConfigManager} from "../../src/core/StrataxConfigManager.sol";
 import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
+import {OneInchExecutor} from "../../src/core/executors/OneInchExecutor.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {StrataxAavePositionInitConstants} from "../../src/libraries/constants/StrataxAavePositionInitConstants.sol";
@@ -98,7 +99,9 @@ contract RecordSwapData is Test, ConstantsEtMainnet {
 
         bytes32 lendingProtocolId = LENDING_AAVE_V3_ID;
         bytes32 swapProtocolId = SWAP_ONEINCH_V6_ID;
-        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(strataxPositionNft));
+        OneInchExecutor oneInchExecutor = new OneInchExecutor();
+        AaveOneInchPositionAdapter adapter =
+            new AaveOneInchPositionAdapter(address(strataxPositionNft), oneInchExecutor);
         vm.prank(admin);
         strataxConfigManager.setProtocolPairConfig(
             lendingProtocolId, swapProtocolId, address(strataxBeacon), address(adapter)

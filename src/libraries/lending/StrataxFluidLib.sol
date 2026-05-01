@@ -34,4 +34,14 @@ library StrataxFluidLib {
 
         return collateralToken != borrowToken;
     }
+
+    /// @notice Decodes encoded lending config and builds PositionInitParams for position contract initialization.
+    function buildPositionInitParams(bytes memory configData) internal pure returns (PositionInitParams memory params) {
+        InitParams memory config = decodeConfig(configData);
+        params = PositionInitParams({
+            fluidVault: config.vault,
+            borrowSafetyMargin: config.defaultBorrowSafetyMargin,
+            maxLeverageOffset: config.defaultMaxLeverageOffset
+        });
+    }
 }

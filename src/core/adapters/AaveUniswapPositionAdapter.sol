@@ -2,6 +2,7 @@
 pragma solidity ^0.8.13;
 
 import {BasePositionAdapter} from "./BasePositionAdapter.sol";
+import {ISwapExecutor} from "../interfaces/internal/ISwapExecutor.sol";
 import {StrataxAaveLib} from "../../libraries/lending/StrataxAaveLib.sol";
 import {StrataxUniswapLib} from "../../libraries/swapping/StrataxUniswapLib.sol";
 import {StrataxAaveUniswapCombinedLib} from "../../libraries/combined/StrataxAaveUniswapCombinedLib.sol";
@@ -10,7 +11,12 @@ contract AaveUniswapPositionAdapter is BasePositionAdapter {
     bytes32 private constant LENDING_PROTOCOL_ID = keccak256("LENDING:AAVE_V3");
     bytes32 private constant SWAP_PROTOCOL_ID = keccak256("SWAP:UNISWAP_V3");
 
-    constructor(address strataxPositionNft_) BasePositionAdapter(strataxPositionNft_) {}
+    ISwapExecutor public immutable uniswapExecutor;
+
+    constructor(address strataxPositionNft_, ISwapExecutor _uniswapExecutor) BasePositionAdapter(strataxPositionNft_) {
+        require(address(_uniswapExecutor) != address(0), "Invalid executor");
+        uniswapExecutor = _uniswapExecutor;
+    }
 
     function _supportedLendingProtocolId() internal pure override returns (bytes32 lendingProtocolId) {
         return LENDING_PROTOCOL_ID;
@@ -36,11 +42,11 @@ contract AaveUniswapPositionAdapter is BasePositionAdapter {
 
     function _validateSwapTokens(address collateralToken, address borrowToken, bytes calldata swapConfigData)
         internal
-        pure
+        view
         override
         returns (bool isValid)
     {
-        return StrataxUniswapLib.validateTokenPair(collateralToken, borrowToken, swapConfigData);
+        return uniswapExecutor.validateTokenPair(collateralToken, borrowToken, swapConfigData);
     }
 
     function _deployAndInitialize(
@@ -50,7 +56,7 @@ contract AaveUniswapPositionAdapter is BasePositionAdapter {
         bytes32 deploymentSalt
     ) internal override returns (address strataxProxy) {
         return StrataxAaveUniswapCombinedLib.deployAndInitialize(
-            lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt
+            lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt, address(uniswapExecutor)
         );
     }
 
@@ -61,7 +67,7 @@ contract AaveUniswapPositionAdapter is BasePositionAdapter {
         bytes32 deploymentSalt
     ) internal view override returns (address predictedStrataxProxy) {
         return StrataxAaveUniswapCombinedLib.predictDeploymentAddress(
-            lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt
+            lendingConfigData, swapConfigData, strataxInitConfig, deploymentSalt, address(uniswapExecutor)
         );
     }
 }

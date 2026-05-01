@@ -8,6 +8,7 @@ import {Stratax_Aave_Uniswap as StrataxUniswap} from "../../src/core/position-ty
 import {Stratax_Aave_1Inch as Stratax} from "../../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {AaveUniswapPositionAdapter} from "../../src/core/adapters/AaveUniswapPositionAdapter.sol";
+import {UniswapV3Executor} from "../../src/core/executors/UniswapV3Executor.sol";
 import {StrataxAavePositionInitConstants} from "../../src/libraries/constants/StrataxAavePositionInitConstants.sol";
 import {StrataxUniswapConstants} from "../../src/libraries/constants/StrataxUniswapConstants.sol";
 import {IPool} from "../../src/interfaces/external/IPool.sol";
@@ -42,6 +43,29 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
 
         assertTrue(strataxProxy != address(0), "Stratax proxy should be deployed");
         assertEq(strataxPositionNft.ownerOf(tokenId), user, "NFT owner should be user");
+    }
+
+    function test_Router_CalculateUniswapOpenParams() public {
+        address user = address(0xF00D);
+        uint256 collateralAmount = 1000 * 10 ** 6;
+        uint256 desiredLeverage = 25_000;
+
+        vm.prank(user);
+        (, address strataxProxy) = router.mintPosition(USDC, WETH, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID);
+
+        (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFee) =
+            router.calculateUniswapOpenParams(strataxProxy, desiredLeverage, collateralAmount);
+
+        assertTrue(flashLoanAmount > 0, "flashLoanAmount should be positive");
+        assertTrue(borrowAmount > 0, "borrowAmount should be positive");
+        assertTrue(strataxFee > 0, "strataxFee should be positive");
+
+        (uint256 expectedFlashLoan, uint256 expectedBorrow, uint256 expectedFee) =
+            StrataxUniswap(strataxProxy).calculateOpenParams(desiredLeverage, collateralAmount);
+
+        assertEq(flashLoanAmount, expectedFlashLoan);
+        assertEq(borrowAmount, expectedBorrow);
+        assertEq(strataxFee, expectedFee);
     }
 
     /*//////////////////////////////////////////////////////////////
@@ -451,7 +475,9 @@ contract StrataxRouterForkTest is StrataxForkTestBase {
             new StrataxProtocolBeacon(address(uniswapImplementation), admin, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID);
 
         vm.startPrank(admin);
-        AaveUniswapPositionAdapter adapter = new AaveUniswapPositionAdapter(address(strataxPositionNft));
+        UniswapV3Executor uniswapExecutor = new UniswapV3Executor();
+        AaveUniswapPositionAdapter adapter =
+            new AaveUniswapPositionAdapter(address(strataxPositionNft), uniswapExecutor);
         strataxConfigManager.setProtocolPairConfig(
             LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID, address(uniswapBeacon), address(adapter)
         );

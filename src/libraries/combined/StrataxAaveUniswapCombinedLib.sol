@@ -1,12 +1,11 @@
 // SPDX-License-Identifier: UNLICENSED
 pragma solidity ^0.8.13;
 
-import {BeaconProxy} from "@openzeppelin/contracts/proxy/beacon/BeaconProxy.sol";
-import {Create2} from "@openzeppelin/contracts/utils/Create2.sol";
 import {Stratax_Aave_Uniswap as Stratax} from "../../core/position-types/Stratax_Aave_Uniswap.sol";
 import {StrataxAaveLib} from "../lending/StrataxAaveLib.sol";
 import {StrataxUniswapLib} from "../swapping/StrataxUniswapLib.sol";
 import {StrataxCoreLib} from "../stratax/StrataxCoreLib.sol";
+import {StrataxProxyLib} from "../StrataxProxyLib.sol";
 
 library StrataxAaveUniswapCombinedLib {
     struct StrataxInitConfig {
@@ -27,29 +26,6 @@ library StrataxAaveUniswapCombinedLib {
         uint256 minReturnAmount;
     }
 
-    struct CreateLeveragedPositionParams {
-        uint256 desiredLeverage;
-        uint256 collateralAmount;
-        bytes swapPath;
-        uint256 minReturnAmount;
-    }
-
-    function decodeLendingConfig(bytes memory lendingConfigData)
-        internal
-        pure
-        returns (StrataxAaveLib.InitParams memory lendingConfig)
-    {
-        lendingConfig = StrataxAaveLib.decodeConfig(lendingConfigData);
-    }
-
-    function decodeSwapConfig(bytes memory swapConfigData)
-        internal
-        pure
-        returns (StrataxUniswapLib.Config memory swapConfig)
-    {
-        swapConfig = StrataxUniswapLib.decodeConfig(swapConfigData);
-    }
-
     function decodeStrataxInitConfig(bytes memory strataxInitConfig)
         internal
         pure
@@ -67,106 +43,55 @@ library StrataxAaveUniswapCombinedLib {
     }
 
     function buildInitData(
-        address positionNft,
-        uint256 tokenId,
-        address collateralToken,
-        address borrowToken,
-        address pool,
-        address dataProvider,
-        address router,
-        address strataxOracle,
-        address feeCollector,
-        uint256 borrowSafetyMargin,
-        uint256 maxLeverageOffset
+        bytes memory lendingConfigData,
+        bytes memory swapConfigData,
+        StrataxInitConfig memory initConfig,
+        address swapExecutor
     ) internal pure returns (bytes memory initData) {
         StrataxAaveLib.PositionInitParams memory lendingParams =
-            StrataxAaveLib.PositionInitParams({
-                aavePool: pool,
-                aaveDataProvider: dataProvider,
-                borrowSafetyMargin: borrowSafetyMargin,
-                maxLeverageOffset: maxLeverageOffset
-            });
-
-        StrataxUniswapLib.InitParams memory swapParams = StrataxUniswapLib.InitParams({uniswapRouter: router});
+            StrataxAaveLib.buildPositionInitParams(lendingConfigData);
+        StrataxUniswapLib.InitParams memory swapParams = StrataxUniswapLib.buildSwapInitParams(swapConfigData);
 
         StrataxCoreLib.InitParams memory strataxParams = StrataxCoreLib.InitParams({
-            strataxPositionNft: positionNft,
-            tokenId: tokenId,
-            collateralToken: collateralToken,
-            borrowToken: borrowToken,
-            strataxOracle: strataxOracle,
-            feeCollector: feeCollector
+            strataxPositionNft: initConfig.positionNft,
+            tokenId: initConfig.tokenId,
+            collateralToken: initConfig.collateralToken,
+            borrowToken: initConfig.borrowToken,
+            strataxOracle: initConfig.strataxOracle,
+            feeCollector: initConfig.feeCollector
         });
 
-        initData = abi.encodeWithSelector(Stratax.initialize.selector, lendingParams, swapParams, strataxParams);
+        initData =
+            abi.encodeWithSelector(Stratax.initialize.selector, lendingParams, swapParams, strataxParams, swapExecutor);
     }
 
     function deployAndInitialize(
         bytes memory lendingConfigData,
         bytes memory swapConfigData,
-        bytes memory strataxInitConfig,
-        bytes32 deploymentSalt
+        bytes memory strataxInitConfigData,
+        bytes32 deploymentSalt,
+        address swapExecutor
     ) internal returns (address strataxProxy) {
-        (
-            StrataxAaveLib.InitParams memory lendingConfig,
-            StrataxUniswapLib.Config memory ignoredSwapConfig,
-            StrataxInitConfig memory initConfig,
-            bytes memory initData
-        ) = _buildDeploymentData(lendingConfigData, swapConfigData, strataxInitConfig);
-
-        ignoredSwapConfig;
+        StrataxInitConfig memory initConfig = decodeStrataxInitConfig(strataxInitConfigData);
+        StrataxAaveLib.InitParams memory lendingConfig = StrataxAaveLib.decodeConfig(lendingConfigData);
         validateTokens(initConfig.collateralToken, initConfig.borrowToken, lendingConfig.dataProvider);
-        BeaconProxy proxy = new BeaconProxy{salt: deploymentSalt}(initConfig.beacon, initData);
-        strataxProxy = address(proxy);
+        bytes memory initData = buildInitData(lendingConfigData, swapConfigData, initConfig, swapExecutor);
+        strataxProxy = StrataxProxyLib.deploy(initConfig.beacon, deploymentSalt, initData);
     }
 
     function predictDeploymentAddress(
         bytes memory lendingConfigData,
         bytes memory swapConfigData,
-        bytes memory strataxInitConfig,
-        bytes32 deploymentSalt
+        bytes memory strataxInitConfigData,
+        bytes32 deploymentSalt,
+        address swapExecutor
     ) internal view returns (address predictedStrataxProxy) {
-        (StrataxAaveLib.InitParams memory lendingConfig,, StrataxInitConfig memory initConfig, bytes memory initData) =
-            _buildDeploymentData(lendingConfigData, swapConfigData, strataxInitConfig);
-
+        StrataxInitConfig memory initConfig = decodeStrataxInitConfig(strataxInitConfigData);
+        StrataxAaveLib.InitParams memory lendingConfig = StrataxAaveLib.decodeConfig(lendingConfigData);
         validateTokens(initConfig.collateralToken, initConfig.borrowToken, lendingConfig.dataProvider);
-
-        bytes memory creationCode =
-            abi.encodePacked(type(BeaconProxy).creationCode, abi.encode(initConfig.beacon, initData));
-        predictedStrataxProxy = Create2.computeAddress(deploymentSalt, keccak256(creationCode), address(this));
-    }
-
-    function _buildDeploymentData(
-        bytes memory lendingConfigData,
-        bytes memory swapConfigData,
-        bytes memory strataxInitConfig
-    )
-        private
-        pure
-        returns (
-            StrataxAaveLib.InitParams memory lendingConfig,
-            StrataxUniswapLib.Config memory swapConfig,
-            StrataxInitConfig memory initConfig,
-            bytes memory initData
-        )
-    {
-        lendingConfig = decodeLendingConfig(lendingConfigData);
-        swapConfig = decodeSwapConfig(swapConfigData);
-        initConfig = decodeStrataxInitConfig(strataxInitConfig);
-
-        initData = buildInitData(
-            initConfig.positionNft,
-            initConfig.tokenId,
-            initConfig.collateralToken,
-            initConfig.borrowToken,
-            lendingConfig.pool,
-            lendingConfig.dataProvider,
-            swapConfig.router,
-            initConfig.strataxOracle,
-            initConfig.feeCollector,
-            lendingConfig.defaultBorrowSafetyMargin,
-            lendingConfig.defaultMaxLeverageOffset
-        );
+        bytes memory initData = buildInitData(lendingConfigData, swapConfigData, initConfig, swapExecutor);
+        predictedStrataxProxy =
+            StrataxProxyLib.predictAddress(initConfig.beacon, deploymentSalt, initData, address(this));
     }
 
     function openPosition(

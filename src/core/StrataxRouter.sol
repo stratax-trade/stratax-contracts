@@ -300,6 +300,28 @@ contract StrataxRouter is IERC721Receiver, ReentrancyGuard {
         return position.calculateOpenParams(params);
     }
 
+    /// @notice Calculates open parameters for a Uniswap position.
+    /// @dev Use the returned flashLoanAmount and borrowAmount when calculating the Uniswap swap path off-chain.
+    function calculateUniswapOpenParams(address proxy, uint256 desiredLeverage, uint256 collateralAmount)
+        external
+        view
+        returns (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFee)
+    {
+        Stratax_Aave_Uniswap position = Stratax_Aave_Uniswap(proxy);
+        return position.calculateOpenParams(desiredLeverage, collateralAmount);
+    }
+
+    /// @notice Calculates open parameters for a Uniswap position with optional off-chain pricing.
+    /// @dev If prices are provided, they are used directly; otherwise the position contract fetches them from the oracle.
+    function calculateUniswapOpenParams(address proxy, Stratax_Aave_Uniswap.CalcOpenParams calldata params)
+        external
+        view
+        returns (uint256 flashLoanAmount, uint256 borrowAmount, uint256 strataxFee)
+    {
+        Stratax_Aave_Uniswap position = Stratax_Aave_Uniswap(proxy);
+        return position.calculateOpenParams(params);
+    }
+
     /// @notice Predicts the proxy address for the next position minted through this router.
     /// @dev Use this as `fromAddress` when fetching 1inch swap data off-chain.
     function predictNextProxyAddress(

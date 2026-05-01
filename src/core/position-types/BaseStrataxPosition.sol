@@ -140,12 +140,44 @@ abstract contract BaseStrataxPosition is Initializable, ReentrancyGuardTransient
     /// @notice Returns protocol-specific collateral and debt balances in token units
     function _getTotalCollateralAndDebt() internal view virtual returns (uint256 totalCollateral, uint256 totalDebt);
 
+    /// @notice Returns the loan-to-value ratio for the collateral token (4-decimal precision, e.g. 7500 = 75%).
+    ///         Returns 0 when the protocol does not expose an LTV, causing getMaxLeverage() to return 0.
+    function _getCollateralLtv() internal view virtual returns (uint256) {
+        return 0;
+    }
+
     /*//////////////////////////////////////////////////////////////
                           VIEW FUNCTIONS
     //////////////////////////////////////////////////////////////*/
 
     function owner() public view returns (address) {
         return strataxPositionNft.ownerOf(tokenId);
+    }
+
+    function getCollateralTokenAddress() external view returns (address) {
+        return collateralToken;
+    }
+
+    function getBorrowTokenAddress() external view returns (address) {
+        return borrowToken;
+    }
+
+    /// @notice Returns the maximum achievable leverage for this position's collateral token.
+    /// @dev    Derived from the collateral LTV: max = (LEVERAGE_PREC² / (LTV_PREC - ltv)) - maxLeverageOffset.
+    ///         Returns 0 when the underlying protocol does not provide an LTV (default _getCollateralLtv).
+    function getMaxLeverage() public view virtual returns (uint256) {
+        uint256 ltv = _getCollateralLtv();
+        if (ltv == 0 || ltv >= StrataxCalculations.LTV_PRECISION) return 0;
+        uint256 rawMax = (StrataxCalculations.LEVERAGE_PRECISION * StrataxCalculations.LEVERAGE_PRECISION)
+            / (StrataxCalculations.LTV_PRECISION - ltv);
+        if (rawMax <= maxLeverageOffset) return StrataxCalculations.LEVERAGE_PRECISION;
+        return rawMax - maxLeverageOffset;
+    }
+
+    /// @notice Returns max achievable leverage accounting for fee model and safety margin.
+    /// @dev Child contracts with protocol-specific fee models should override with exact logic.
+    function getMaxAchievableLeverageBinary() public view virtual returns (uint256) {
+        return getMaxLeverage();
     }
 
     function getCurrentLeverage() public view returns (uint256 currentLeverage) {

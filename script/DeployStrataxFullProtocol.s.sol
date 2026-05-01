@@ -14,6 +14,8 @@ import {StrataxProtocolBeacon} from "../src/core/StrataxProtocolBeacon.sol";
 import {AaveOneInchPositionAdapter} from "../src/core/adapters/AaveOneInchPositionAdapter.sol";
 import {AaveUniswapPositionAdapter} from "../src/core/adapters/AaveUniswapPositionAdapter.sol";
 import {FluidUniswapPositionAdapter} from "../src/core/adapters/FluidUniswapPositionAdapter.sol";
+import {OneInchExecutor} from "../src/core/executors/OneInchExecutor.sol";
+import {UniswapV3Executor} from "../src/core/executors/UniswapV3Executor.sol";
 
 import {Stratax_Aave_1Inch} from "../src/core/position-types/Stratax_Aave_1Inch.sol";
 import {Stratax_Aave_Uniswap} from "../src/core/position-types/Stratax_Aave_Uniswap.sol";
@@ -173,15 +175,18 @@ contract DeployStrataxFullProtocol is Script, ConstantsEtMainnet {
             address fluidUniswapAdapter
         )
     {
+        OneInchExecutor oneInchExecutor = new OneInchExecutor();
+        UniswapV3Executor uniswapExecutor = new UniswapV3Executor();
+
         Stratax_Aave_1Inch aaveOneInchImpl = new Stratax_Aave_1Inch();
         aaveOneInchBeacon =
             address(new StrataxProtocolBeacon(address(aaveOneInchImpl), owner, LENDING_AAVE_V3_ID, SWAP_ONEINCH_V6_ID));
-        aaveOneInchAdapter = address(new AaveOneInchPositionAdapter(positionNftProxy));
+        aaveOneInchAdapter = address(new AaveOneInchPositionAdapter(positionNftProxy, oneInchExecutor));
 
         Stratax_Aave_Uniswap aaveUniswapImpl = new Stratax_Aave_Uniswap();
         aaveUniswapBeacon =
             address(new StrataxProtocolBeacon(address(aaveUniswapImpl), owner, LENDING_AAVE_V3_ID, SWAP_UNISWAP_V3_ID));
-        aaveUniswapAdapter = address(new AaveUniswapPositionAdapter(positionNftProxy));
+        aaveUniswapAdapter = address(new AaveUniswapPositionAdapter(positionNftProxy, uniswapExecutor));
 
         Stratax_Fluid_Uniswap fluidUniswapImpl = new Stratax_Fluid_Uniswap();
         fluidUniswapBeacon = address(

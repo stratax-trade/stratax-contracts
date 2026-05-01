@@ -11,6 +11,7 @@ import {StrataxProtocolBeacon} from "../src/core/StrataxProtocolBeacon.sol";
 import {AaveOneInchPositionAdapter} from "../src/core/adapters/AaveOneInchPositionAdapter.sol";
 import {StrataxAaveLib} from "../src/libraries/lending/StrataxAaveLib.sol";
 import {Stratax1InchLib} from "../src/libraries/swapping/Stratax1InchLib.sol";
+import {OneInchExecutor} from "../src/core/executors/OneInchExecutor.sol";
 import {StrataxAavePositionInitConstants} from "../src/libraries/constants/StrataxAavePositionInitConstants.sol";
 import {Stratax1InchConstants} from "../src/libraries/constants/Stratax1InchConstants.sol";
 import {ConstantsEtMainnet} from "../test/Constants.sol";
@@ -244,7 +245,8 @@ contract DeployStrataxSystem is Script, ConstantsEtMainnet {
         bytes32 lendingProtocolId = LENDING_AAVE_V3_ID;
         bytes32 swapProtocolId = SWAP_ONEINCH_V6_ID;
 
-        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(positionNftAddress);
+        OneInchExecutor oneInchExecutor = new OneInchExecutor();
+        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(positionNftAddress, oneInchExecutor);
         configManager.setProtocolPairConfig(lendingProtocolId, swapProtocolId, strataxBeacon, address(adapter));
 
         StrataxAaveLib.InitParams memory lendingDefaults = StrataxAavePositionInitConstants.ethereumConfigParams(

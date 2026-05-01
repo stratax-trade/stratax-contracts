@@ -7,6 +7,7 @@ import {StrataxPositionNft} from "../../src/core/StrataxPositionNft.sol";
 import {StrataxConfigManager} from "../../src/core/StrataxConfigManager.sol";
 import {StrataxProtocolBeacon} from "../../src/core/StrataxProtocolBeacon.sol";
 import {AaveOneInchPositionAdapter} from "../../src/core/adapters/AaveOneInchPositionAdapter.sol";
+import {OneInchExecutor} from "../../src/core/executors/OneInchExecutor.sol";
 import {StrataxOracle} from "../../src/core/StrataxOracle.sol";
 import {FeeCollector} from "../../src/core/FeeCollector.sol";
 import {StrataxAavePositionInitConstants} from "../../src/libraries/constants/StrataxAavePositionInitConstants.sol";
@@ -332,7 +333,8 @@ abstract contract BaseStrataxTest is Test, ConstantsEtMainnet {
         bytes32 swapProtocolId = SWAP_ONEINCH_V6_ID;
 
         vm.startPrank(caller);
-        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(nft));
+        OneInchExecutor oneInchExecutor = new OneInchExecutor();
+        AaveOneInchPositionAdapter adapter = new AaveOneInchPositionAdapter(address(nft), oneInchExecutor);
         manager.setProtocolPairConfig(lendingProtocolId, swapProtocolId, beacon, address(adapter));
 
         bytes memory lendingData = abi.encode(StrataxAavePositionInitConstants.ethereumConfigParams(flashLoanFeeBps_));

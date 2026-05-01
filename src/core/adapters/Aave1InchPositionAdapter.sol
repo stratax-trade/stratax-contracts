@@ -7,9 +7,9 @@ import {StrataxAaveLib} from "../../libraries/lending/StrataxAaveLib.sol";
 import {Stratax1InchLib} from "../../libraries/swapping/Stratax1InchLib.sol";
 import {StrataxAave1InchCombinedLib} from "../../libraries/combined/StrataxAave1InchCombinedLib.sol";
 
-contract AaveOneInchPositionAdapter is BasePositionAdapter {
+contract Aave1InchPositionAdapter is BasePositionAdapter {
     bytes32 private constant LENDING_PROTOCOL_ID = keccak256("LENDING:AAVE_V3");
-    bytes32 private constant SWAP_PROTOCOL_ID = keccak256("SWAP:ONEINCH_V6");
+    bytes32 private constant SWAP_PROTOCOL_ID = keccak256("SWAP:ONE_INCH");
 
     ISwapExecutor public immutable oneInchExecutor;
 

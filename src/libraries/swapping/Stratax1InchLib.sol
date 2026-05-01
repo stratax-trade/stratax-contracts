@@ -31,4 +31,10 @@ library Stratax1InchLib {
         Config memory config = decodeConfig(configData);
         return config.router != address(0);
     }
+
+    /// @notice Decodes encoded swap config and builds InitParams for position contract initialization.
+    function buildSwapInitParams(bytes memory configData) internal pure returns (InitParams memory params) {
+        Config memory config = decodeConfig(configData);
+        params = InitParams({oneInchRouter: config.router});
+    }
 }
